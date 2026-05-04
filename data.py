@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -70,5 +71,55 @@ def load_prices(tickers: list[str], start: str, end: str) -> pd.DataFrame:
     batches = [tickers[i:i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
     frames = [_normalize_columns(_download_batch(b, start, end), b) for b in batches]
     df = pd.concat(frames, axis=1) if len(frames) > 1 else frames[0]
+    df.to_parquet(path)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Fundamental data (Phase 2)
+# ---------------------------------------------------------------------------
+_FUND_CACHE_TTL = 86400  # 24시간
+
+
+def load_fundamentals(tickers: list[str]) -> pd.DataFrame:
+    """yfinance ticker.info에서 fundamental 데이터 로딩.
+
+    Returns:
+        DataFrame indexed by ticker. Columns:
+        market_cap, pe_ratio, pb_ratio, ev_ebitda, fcf_yield,
+        roe, gross_margin, debt_equity, sector
+
+    ⚠ 현재 시점 스냅샷 → look-ahead bias. Phase 6에서 PIT 데이터로 교체.
+    Cache: ~/.cache/quant-system/fund_{hash}.parquet (24h TTL)
+    """
+    h = hashlib.md5(json.dumps(sorted(tickers)).encode()).hexdigest()
+    path = CACHE_DIR / f"fund_{h}.parquet"
+
+    if path.exists() and (time.time() - path.stat().st_mtime) < _FUND_CACHE_TTL:
+        return pd.read_parquet(path)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    rows: dict[str, dict] = {}
+    for ticker in tickers:
+        try:
+            info = yf.Ticker(ticker).info
+            mc = info.get("marketCap") or 0
+            rows[ticker] = {
+                "market_cap": mc,
+                "pe_ratio": info.get("trailingPE"),
+                "pb_ratio": info.get("priceToBook"),
+                "ev_ebitda": info.get("enterpriseToEbitda"),
+                "fcf_yield": (info.get("freeCashflow") or 0) / mc if mc > 0 else None,
+                "roe": info.get("returnOnEquity"),
+                "gross_margin": info.get("grossMargins"),
+                "debt_equity": info.get("debtToEquity"),
+                "sector": info.get("sector", "Unknown"),
+            }
+        except Exception:
+            continue
+
+    df = pd.DataFrame(rows).T
+    numeric_cols = [c for c in df.columns if c != "sector"]
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     df.to_parquet(path)
     return df

@@ -1,4 +1,4 @@
-"""Streamlit UI — Quant System Phase 1."""
+"""Streamlit UI — Quant System Phase 2 (5-factor composite)."""
 from __future__ import annotations
 
 import pandas as pd
@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from backtest import BacktestEngine
-from data import load_prices
-from factors import compute_momentum
+from data import load_fundamentals, load_prices
+from factors import compute_composite
 from portfolio import build_multifactor_portfolio
 
 # S&P 500 소형주 proxy universe (Phase 1 하드코딩 / Phase 6에서 교체)
@@ -21,16 +21,24 @@ UNIVERSE_TICKERS = [
 ALL_TICKERS = UNIVERSE_TICKERS + ["SPY"]
 
 
-@st.cache_data(show_spinner="데이터 로딩 중...")
+@st.cache_data(show_spinner="가격 데이터 로딩 중...")
 def get_prices(start: str, end: str) -> pd.DataFrame:
     return load_prices(ALL_TICKERS, start, end)
 
 
-@st.cache_data(show_spinner="백테스트 실행 중...")
-def run_backtest(start: str, end: str, top_n: int, lookback: int) -> dict | None:
-    prices = get_prices(start, end)
+@st.cache_data(show_spinner="펀더멘탈 데이터 로딩 중...")
+def get_fundamentals() -> pd.DataFrame:
+    return load_fundamentals(UNIVERSE_TICKERS)
 
-    # Close prices (adj_close 우선)
+
+@st.cache_data(show_spinner="백테스트 실행 중...")
+def run_backtest(
+    start: str, end: str, top_n: int,
+    mom_lookback: int, vol_lookback: int, sector_neutral: bool,
+) -> dict | None:
+    prices = get_prices(start, end)
+    fundamentals = get_fundamentals()
+
     for field in ("adj_close", "close"):
         try:
             close = prices.xs(field, level="field", axis=1)
@@ -44,11 +52,17 @@ def run_backtest(start: str, end: str, top_n: int, lookback: int) -> dict | None
     weights_rows: list[tuple] = []
     for date in rebal_dates:
         hist_close = uni_close.loc[:date].dropna(axis=1, how="all")
-        if len(hist_close) < lookback + 5:
+        if len(hist_close) < mom_lookback + 5:
             continue
         valid_tickers = hist_close.columns.tolist()
         sub_prices = prices.loc[:date, [c for c in prices.columns if c[0] in valid_tickers]]
-        scores = compute_momentum(sub_prices, lookback=lookback)
+        sub_fund = fundamentals.loc[fundamentals.index.isin(valid_tickers)]
+        scores = compute_composite(
+            sub_prices, sub_fund,
+            momentum_lookback=mom_lookback,
+            lowvol_lookback=vol_lookback,
+            sector_neutral=sector_neutral,
+        )
         weights = build_multifactor_portfolio(scores, top_n=top_n)
         if not weights.empty:
             weights_rows.append((date, weights))
@@ -85,22 +99,24 @@ def _fmt(v: float, pct: bool = True) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Quant System", layout="wide")
-    st.title("Quant System — Phase 1")
-    st.caption("Multi-factor momentum strategy · S&P 500 small-cap proxy universe")
+    st.title("Quant System — 5-Factor Backtest")
+    st.caption("Size · Value · Momentum · Quality · Low Vol — S&P 500 small-cap proxy")
 
     with st.sidebar:
         st.header("파라미터")
         start = str(st.date_input("시작일", value=pd.Timestamp("2020-01-01")))
         end = str(st.date_input("종료일", value=pd.Timestamp("2024-12-31")))
         top_n = st.slider("Top N 종목", 10, 50, 20)
-        lookback = st.slider("Momentum Lookback (일)", 60, 252, 252)
+        mom_lookback = st.slider("Momentum Lookback (일)", 60, 252, 252)
+        vol_lookback = st.slider("Low Vol Lookback (일)", 20, 120, 60)
+        sector_neutral = st.checkbox("Sector Neutral", value=True)
         run = st.button("Run backtest", type="primary", use_container_width=True)
 
     if not run:
         st.info("사이드바에서 파라미터 설정 후 **Run backtest**를 클릭하세요.")
         return
 
-    result = run_backtest(start, end, top_n, lookback)
+    result = run_backtest(start, end, top_n, mom_lookback, vol_lookback, sector_neutral)
     if result is None:
         st.error("데이터 부족. 기간을 늘리거나 lookback을 줄여주세요.")
         return
