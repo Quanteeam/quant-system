@@ -1,4 +1,4 @@
-"""Streamlit UI — Quant System Phase 2 (5-factor composite)."""
+"""Streamlit UI — Quant System Phase 4 (5-factor + PEAD hybrid)."""
 from __future__ import annotations
 
 import pandas as pd
@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from backtest import BacktestEngine, walk_forward_split
-from data import load_fundamentals, load_prices
-from factors import compute_composite
-from portfolio import build_multifactor_portfolio
+from data import load_earnings, load_fundamentals, load_prices
+from factors import compute_composite, compute_quality, compute_sue, compute_value
+from portfolio import build_event_portfolio, build_multifactor_portfolio
 
 # S&P 500 소형주 proxy universe (Phase 1 하드코딩 / Phase 6에서 교체)
 UNIVERSE_TICKERS = [
@@ -31,10 +31,17 @@ def get_fundamentals() -> pd.DataFrame:
     return load_fundamentals(UNIVERSE_TICKERS)
 
 
+@st.cache_data(show_spinner="실적 데이터 로딩 중...")
+def get_earnings() -> pd.DataFrame:
+    return load_earnings(UNIVERSE_TICKERS)
+
+
 @st.cache_data(show_spinner="백테스트 실행 중...")
 def run_backtest(
     start: str, end: str, top_n: int,
     mom_lookback: int, vol_lookback: int, sector_neutral: bool,
+    enable_event: bool = False, sue_threshold: float = 1.5,
+    max_holding: int = 45,
 ) -> dict | None:
     prices = get_prices(start, end)
     fundamentals = get_fundamentals()
@@ -77,6 +84,22 @@ def run_backtest(
         .fillna(0)
     )
 
+    # Event sleeve (PEAD)
+    if enable_event:
+        earnings = get_earnings()
+        sue_signals = compute_sue(earnings)
+        q_scores = compute_quality(fundamentals) if not fundamentals.empty else None
+        v_scores = compute_value(fundamentals) if not fundamentals.empty else None
+        event_w = build_event_portfolio(
+            sue_signals, prices, quality_scores=q_scores, value_scores=v_scores,
+            sue_threshold=sue_threshold, max_holding_days=max_holding,
+        )
+        # 40/60 합성
+        all_cols = sorted(set(weights_history.columns) | set(event_w.columns))
+        mf_a = weights_history.reindex(columns=all_cols, fill_value=0) * 0.4
+        ev_a = event_w.reindex(index=weights_history.index, columns=all_cols, fill_value=0) * 0.6
+        weights_history = mf_a + ev_a
+
     engine = BacktestEngine(prices, initial_capital=100_000,
                             commission_bps=1.0, slippage_bps=30.0)
     result = engine.run(weights_history)
@@ -102,24 +125,32 @@ def _fmt(v: float, pct: bool = True) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Quant System", layout="wide")
-    st.title("Quant System — 5-Factor Backtest")
-    st.caption("Size · Value · Momentum · Quality · Low Vol — S&P 500 small-cap proxy")
+    st.title("Quant System — Multi-factor + PEAD Hybrid")
+    st.caption("5-Factor sleeve (40%) + Event-driven PEAD sleeve (60%)")
 
     with st.sidebar:
-        st.header("파라미터")
+        st.header("Multi-factor")
         start = str(st.date_input("시작일", value=pd.Timestamp("2020-01-01")))
         end = str(st.date_input("종료일", value=pd.Timestamp("2024-12-31")))
         top_n = st.slider("Top N 종목", 10, 50, 20)
         mom_lookback = st.slider("Momentum Lookback (일)", 60, 252, 252)
         vol_lookback = st.slider("Low Vol Lookback (일)", 20, 120, 60)
         sector_neutral = st.checkbox("Sector Neutral", value=True)
+        st.divider()
+        st.header("PEAD Event Sleeve")
+        enable_event = st.checkbox("Enable 60/40 Hybrid", value=False)
+        sue_threshold = st.slider("SUE Threshold", 0.5, 3.0, 1.5) if enable_event else 1.5
+        max_holding = st.slider("Max Holding (일)", 15, 90, 45) if enable_event else 45
         run = st.button("Run backtest", type="primary", use_container_width=True)
 
     if not run:
         st.info("사이드바에서 파라미터 설정 후 **Run backtest**를 클릭하세요.")
         return
 
-    result = run_backtest(start, end, top_n, mom_lookback, vol_lookback, sector_neutral)
+    result = run_backtest(
+        start, end, top_n, mom_lookback, vol_lookback, sector_neutral,
+        enable_event, sue_threshold, max_holding,
+    )
     if result is None:
         st.error("데이터 부족. 기간을 늘리거나 lookback을 줄여주세요.")
         return

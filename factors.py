@@ -167,6 +167,38 @@ def compute_composite(
     return pd.DataFrame(scored).sum(axis=1).dropna()
 
 
-def compute_sue(*args, **kwargs) -> pd.Series:
-    """Phase 3."""
-    raise NotImplementedError("Phase 3")
+def compute_sue(earnings: pd.DataFrame) -> pd.DataFrame:
+    """Standardized Unexpected Earnings (SUE).
+
+    SUE = (Actual EPS - Estimate EPS) / std(과거 surprise)
+
+    Look-ahead 방지: t 시점 SUE에는 t까지의 surprise만 사용.
+    최소 2개 과거 이벤트 필요 (std 계산).
+
+    Args:
+        earnings: DataFrame with ticker, date, actual_eps, estimate_eps.
+
+    Returns:
+        DataFrame with ticker, date, sue columns.
+    """
+    if earnings.empty:
+        return pd.DataFrame(columns=["ticker", "date", "sue"])
+
+    results: list[dict] = []
+    for ticker, grp in earnings.groupby("ticker"):
+        grp = grp.sort_values("date")
+        surprises = (grp["actual_eps"] - grp["estimate_eps"]).values
+        for i in range(1, len(grp)):
+            # std는 0~i까지 (현재 포함) — 미래 데이터 사용 안 함
+            past_std = float(pd.Series(surprises[: i + 1]).std())
+            if past_std == 0 or np.isnan(past_std):
+                continue
+            results.append({
+                "ticker": ticker,
+                "date": grp.iloc[i]["date"],
+                "sue": float(surprises[i] / past_std),
+            })
+
+    if not results:
+        return pd.DataFrame(columns=["ticker", "date", "sue"])
+    return pd.DataFrame(results)

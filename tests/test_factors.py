@@ -11,6 +11,7 @@ from factors import (
     compute_momentum,
     compute_quality,
     compute_size,
+    compute_sue,
     compute_value,
     _zscore,
 )
@@ -117,6 +118,51 @@ def test_composite_without_fundamentals():
     result = compute_composite(prices, None)
     assert isinstance(result, pd.Series)
     assert len(result) > 0
+
+
+# -- SUE (Phase 4) --
+
+def test_sue_positive_surprise():
+    earnings = pd.DataFrame({
+        "ticker": ["AAPL"] * 4,
+        "date": pd.date_range("2020-03-31", periods=4, freq="QE"),
+        "actual_eps": [1.0, 1.2, 1.5, 2.0],
+        "estimate_eps": [0.9, 1.0, 1.3, 1.0],
+    })
+    result = compute_sue(earnings)
+    assert not result.empty
+    last = result.iloc[-1]
+    assert last["sue"] > 0  # 마지막 이벤트: 큰 양의 서프라이즈
+
+def test_sue_needs_at_least_two_events():
+    earnings = pd.DataFrame({
+        "ticker": ["AAPL"],
+        "date": [pd.Timestamp("2020-03-31")],
+        "actual_eps": [1.5],
+        "estimate_eps": [1.0],
+    })
+    result = compute_sue(earnings)
+    assert result.empty  # std 계산 불가
+
+def test_sue_empty_input():
+    result = compute_sue(pd.DataFrame(
+        columns=["ticker", "date", "actual_eps", "estimate_eps"]))
+    assert result.empty
+
+def test_sue_no_lookahead():
+    """i번째 SUE 계산에 미래 surprise 미포함 확인."""
+    earnings = pd.DataFrame({
+        "ticker": ["X"] * 4,
+        "date": pd.date_range("2020-01-01", periods=4, freq="QE"),
+        "actual_eps": [1.0, 1.2, 0.8, 100.0],  # 4번째에 극단적 서프라이즈
+        "estimate_eps": [0.9, 0.9, 0.9, 0.9],
+    })
+    result = compute_sue(earnings)
+    # i=1 시점: surprise = [0.1, 0.3], std > 0 → SUE 계산 가능
+    sue_at_1 = result[result["date"] == earnings.iloc[1]["date"]]
+    assert not sue_at_1.empty
+    # i=1 SUE는 4번째 극단값(99.1)과 무관해야 함
+    assert abs(sue_at_1.iloc[0]["sue"]) < 10  # 극단적이지 않음
 
 
 # -- zscore --

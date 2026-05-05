@@ -123,3 +123,51 @@ def load_fundamentals(tickers: list[str]) -> pd.DataFrame:
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     df.to_parquet(path)
     return df
+
+
+# ---------------------------------------------------------------------------
+# Earnings data (Phase 4 — PEAD)
+# ---------------------------------------------------------------------------
+
+
+def load_earnings(tickers: list[str]) -> pd.DataFrame:
+    """yfinance에서 실적 발표 이력 로딩.
+
+    Returns:
+        DataFrame: ticker, date, actual_eps, estimate_eps.
+        date는 tz-naive, normalized (시간 제거).
+
+    ⚠ yfinance는 최근 4~8분기만 제공. Phase 6에서 Sharadar PIT로 교체.
+    Cache: ~/.cache/quant-system/earnings_{hash}.parquet (24h TTL)
+    """
+    h = hashlib.md5(json.dumps(sorted(tickers)).encode()).hexdigest()
+    path = CACHE_DIR / f"earnings_{h}.parquet"
+
+    if path.exists() and (time.time() - path.stat().st_mtime) < _FUND_CACHE_TTL:
+        return pd.read_parquet(path)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    rows: list[dict] = []
+    for ticker in tickers:
+        try:
+            ed = yf.Ticker(ticker).earnings_dates
+            if ed is None or ed.empty:
+                continue
+            for dt, row in ed.iterrows():
+                actual = row.get("Reported EPS")
+                estimate = row.get("EPS Estimate")
+                if pd.isna(actual) or pd.isna(estimate):
+                    continue
+                rows.append({
+                    "ticker": ticker,
+                    "date": pd.Timestamp(dt).tz_localize(None).normalize(),
+                    "actual_eps": float(actual),
+                    "estimate_eps": float(estimate),
+                })
+        except Exception:
+            continue
+
+    df = (pd.DataFrame(rows) if rows
+          else pd.DataFrame(columns=["ticker", "date", "actual_eps", "estimate_eps"]))
+    df.to_parquet(path)
+    return df
