@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from backtest import BacktestEngine
+from backtest import BacktestEngine, walk_forward_split
 from data import load_fundamentals, load_prices
 from factors import compute_composite
 from portfolio import build_multifactor_portfolio
@@ -77,7 +77,8 @@ def run_backtest(
         .fillna(0)
     )
 
-    engine = BacktestEngine(prices, initial_capital=100_000)
+    engine = BacktestEngine(prices, initial_capital=100_000,
+                            commission_bps=1.0, slippage_bps=30.0)
     result = engine.run(weights_history)
     last_weights = weights_rows[-1][1]
 
@@ -88,6 +89,8 @@ def run_backtest(
         "cagr": result.cagr,
         "sharpe": result.sharpe,
         "max_drawdown": result.max_drawdown,
+        "calmar": result.calmar,
+        "monthly_returns": result.monthly_returns,
         "benchmark": result.benchmark_curve,
         "weights": last_weights,
     }
@@ -122,11 +125,12 @@ def main() -> None:
         return
 
     # Metric cards
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("CAGR", _fmt(result["cagr"]))
     c2.metric("Sharpe", _fmt(result["sharpe"], pct=False))
     c3.metric("Max Drawdown", _fmt(result["max_drawdown"]))
-    c4.metric("Total Return", _fmt(result["total_return"]))
+    c4.metric("Calmar", _fmt(result["calmar"], pct=False))
+    c5.metric("Total Return", _fmt(result["total_return"]))
 
     # Equity curve
     fig = go.Figure()
@@ -154,6 +158,33 @@ def main() -> None:
     fig2.update_layout(title="Drawdown (%)", xaxis_title="Date",
                        yaxis_title="Drawdown (%)", template="plotly_dark")
     st.plotly_chart(fig2, use_container_width=True)
+
+    # Monthly returns heatmap
+    import numpy as np
+    monthly = result["monthly_returns"]
+    if not monthly.empty:
+        mdf = monthly.to_frame("ret")
+        mdf["year"] = mdf.index.year
+        mdf["month"] = mdf.index.month
+        pivot = mdf.pivot_table(values="ret", index="year", columns="month", aggfunc="first")
+        month_labels = ["Jan","Feb","Mar","Apr","May","Jun",
+                        "Jul","Aug","Sep","Oct","Nov","Dec"]
+        pivot.columns = [month_labels[m - 1] for m in pivot.columns]
+        fig3 = go.Figure(data=go.Heatmap(
+            z=pivot.values * 100, x=pivot.columns, y=pivot.index.astype(str),
+            colorscale="RdYlGn", zmid=0,
+            text=[[f"{v:.1f}" if not np.isnan(v) else "" for v in row]
+                  for row in pivot.values * 100],
+            texttemplate="%{text}%",
+        ))
+        fig3.update_layout(title="Monthly Returns (%)", template="plotly_dark")
+        st.plotly_chart(fig3, use_container_width=True)
+
+    # Walk-forward validation
+    wf = walk_forward_split(result["equity"])
+    if wf:
+        st.subheader("Walk-Forward Validation")
+        st.dataframe(pd.DataFrame(wf), use_container_width=True, hide_index=True)
 
     # Weight table
     st.subheader("최근 포트폴리오 구성")
