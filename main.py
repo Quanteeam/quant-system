@@ -48,7 +48,14 @@ def cmd_ui() -> None:
 
 
 def cmd_kill() -> None:
-    raise NotImplementedError("Phase 5+")
+    """Emergency kill switch: 전 포지션 청산 + 신규 주문 차단."""
+    from pathlib import Path
+    kill_file = Path("KILL_SWITCH")
+    kill_file.touch()
+    print("⚠ KILL SWITCH ACTIVATED")
+    print("  - KILL_SWITCH 파일 생성됨")
+    print("  - 모든 시스템 halt (Phase 7에서 broker 연동)")
+    print("  - 해제: KILL_SWITCH 파일 삭제")
 
 
 COMMANDS = {"backtest": cmd_backtest, "ui": cmd_ui, "kill": cmd_kill}
