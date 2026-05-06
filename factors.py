@@ -28,14 +28,16 @@ def _zscore(s: pd.Series) -> pd.Series:
 
 
 def _sector_neutral_zscore(raw: pd.Series, sectors: pd.Series) -> pd.Series:
-    """Sector 내 z-score. sector 정보 없는 종목은 전체 z-score 적용."""
+    """Sector 내 z-score (벡터화). sector 정보 없는 종목은 전체 z-score 적용."""
     common = raw.dropna().index.intersection(sectors.dropna().index)
     if common.empty:
         return _zscore(raw)
-    df = pd.DataFrame({"score": raw[common], "sector": sectors[common]})
-    return df.groupby("sector")["score"].transform(
-        lambda x: (x - x.mean()) / x.std() if len(x) > 1 and x.std() > 0 else 0.0
-    )
+    scores = raw[common]
+    groups = sectors[common]
+    mean = scores.groupby(groups).transform("mean")
+    std = scores.groupby(groups).transform("std")
+    result = (scores - mean) / std
+    return result.fillna(0.0)
 
 
 # ---------------------------------------------------------------------------
