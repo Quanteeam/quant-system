@@ -8,16 +8,27 @@ import streamlit as st
 
 from backtest import BacktestEngine
 from data import load_earnings, load_fundamentals, load_prices
-from factors import compute_composite, compute_quality, compute_sue, compute_value
+from factors import compute_composite, compute_gap_events, compute_quality, compute_sue, compute_value
 from portfolio import build_event_portfolio, build_multifactor_portfolio
 from risk import RiskEngine
 
 UNIVERSE_TICKERS = [
-    "DVA", "NWSA", "NWS", "PNR", "REG", "RHI", "SJM", "LKQ", "MHK", "IPG",
-    "HII", "AIZ", "BWA", "RL", "VFC", "FRT", "UHS", "MOS", "NDSN", "SEE",
-    "LNC", "AOS", "WHR", "DXC", "HSIC", "GL", "HBI", "CPB", "CAG", "TPR",
-    "TAP", "IVZ", "FLS", "MAS", "LEG", "ALK", "KIM", "PVH", "NI", "LEN",
-    "PHM", "NRG", "WBA", "FOXA", "FOX", "NWL", "IRM", "AIV", "BIO", "JNPR",
+    # Tech/Software mid-cap
+    "CRWD", "DDOG", "NET", "ZS", "HUBS", "PAYC", "FTNT", "SNAP",
+    # Semiconductor
+    "MRVL", "SWKS", "MPWR", "ON", "ENTG", "MKSI",
+    # Healthcare
+    "ALGN", "DXCM", "HOLX", "TECH", "NBIX", "EXAS",
+    # Consumer
+    "DECK", "POOL", "WSM", "DPZ", "WING", "BURL",
+    # Industrial
+    "AXON", "GNRC", "TREX", "RBC", "FND", "SITE",
+    # Finance
+    "LPLA", "RGA", "EWBC", "KNSL", "WBS", "CFR",
+    # Energy/Materials
+    "TRGP", "AR", "CLF", "ATI", "GPK", "UFPI",
+    # REIT/Utility
+    "ELS", "AMH",
 ]
 ALL_TICKERS = UNIVERSE_TICKERS + ["SPY"]
 
@@ -42,7 +53,8 @@ def _to_dict(r):
 
 
 @st.cache_data(show_spinner="백테스트 실행 중...")
-def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, max_hold):
+def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, max_hold,
+                 fw=None):
     prices, fund = get_prices(start, end), get_fundamentals()
     for f in ("adj_close", "close"):
         try:
@@ -59,7 +71,9 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
         vt = h.columns.tolist()
         sp = prices.loc[:d, [c for c in prices.columns if c[0] in vt]]
         sf = fund.loc[fund.index.isin(vt)]
-        sc = compute_composite(sp, sf, momentum_lookback=mom_lb, lowvol_lookback=vol_lb, sector_neutral=sec_neutral)
+        fweights = fw or {"momentum": 0.3, "quality": 0.25, "value": 0.2, "size": 0.1, "lowvol": 0.15}
+        sc = compute_composite(sp, sf, momentum_lookback=mom_lb, lowvol_lookback=vol_lb,
+                               sector_neutral=sec_neutral, weights=fweights)
         w = build_multifactor_portfolio(sc, top_n=top_n)
         if not w.empty: rows.append((d, w))
     if not rows: return None
@@ -71,6 +85,9 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
 
     if ev_on:
         sue = compute_sue(get_earnings())
+        gaps = compute_gap_events(prices)
+        sue = pd.concat([sue, gaps], ignore_index=True).drop_duplicates(
+            subset=["ticker", "date"], keep="first")
         q = compute_quality(fund) if not fund.empty else None
         v = compute_value(fund) if not fund.empty else None
         ev_w = build_event_portfolio(sue, prices, q, v, sue_threshold=sue_th, max_holding_days=max_hold)
@@ -92,30 +109,63 @@ def _f(v, pct=True):
 
 def main():
     st.set_page_config(page_title="Quant System", layout="wide")
-    st.title("Quant System — 4 Baseline Comparison")
+    st.title("Quant System")
+    tab_bt, tab_opt = st.tabs(["Backtest", "Optimize"])
+
+    # best params from optimizer → sidebar defaults
+    bp = st.session_state.get("best_fw", {})
+    def_mom = bp.get("momentum", 0.30)
+    def_qual = bp.get("quality", 0.25)
+    def_val = bp.get("value", 0.20)
+    def_size = bp.get("size", 0.10)
+    def_lvol = bp.get("lowvol", 0.15)
+    bp_raw = st.session_state.get("best_params", {})
 
     with st.sidebar:
         st.header("Multi-factor")
         start = str(st.date_input("시작일", value=pd.Timestamp("2020-01-01")))
         end = str(st.date_input("종료일", value=pd.Timestamp("2024-12-31")))
-        top_n = st.slider("Top N", 10, 50, 20)
-        mom_lb = st.slider("Momentum LB", 60, 252, 252)
-        vol_lb = st.slider("Low Vol LB", 20, 120, 60)
+        top_n = st.slider("Top N", 10, 50, bp_raw.get("top_n", 20))
+        mom_lb = st.slider("Momentum LB", 60, 252, bp_raw.get("momentum_lb", 252))
+        vol_lb = st.slider("Low Vol LB", 20, 180, bp_raw.get("low_vol_lb", 60))
         sec_n = st.checkbox("Sector Neutral", True)
+        st.divider()
+        st.header("Factor Weights")
+        w_mom = st.slider("Momentum", 0.0, 0.6, 0.30, 0.05)
+        w_qual = st.slider("Quality", 0.0, 0.6, 0.25, 0.05)
+        w_val = st.slider("Value", 0.0, 0.6, 0.20, 0.05)
+        w_size = st.slider("Size", 0.0, 0.6, 0.10, 0.05)
+        w_lvol = st.slider("Low Vol", 0.0, 0.6, 0.15, 0.05)
+        w_total = w_mom + w_qual + w_val + w_size + w_lvol
+        if abs(w_total - 1.0) > 0.01:
+            st.warning(f"가중치 합: {w_total:.2f} (1.0이어야 함)")
         st.divider()
         st.header("PEAD")
         ev_on = st.checkbox("Enable Hybrid 60/40", False)
-        sue_th = st.slider("SUE Threshold", 0.5, 3.0, 1.5) if ev_on else 1.5
-        max_hold = st.slider("Max Holding", 15, 90, 45) if ev_on else 45
+        sue_th = st.slider("SUE Threshold", 0.3, 3.0, 1.0, 0.1) if ev_on else 1.0
+        max_hold = st.slider("Max Holding", 15, 90, 60) if ev_on else 60
         run = st.button("Run", type="primary", use_container_width=True)
 
+    # --- Optimize Tab ---
+    with tab_opt:
+        from app_optimize import render_optimize_tab
+        render_optimize_tab()
+
+    # --- Backtest Tab ---
+    with tab_bt:
+        _render_backtest(run, start, end, top_n, mom_lb, vol_lb, sec_n,
+                         ev_on, sue_th, max_hold, w_mom, w_qual, w_val, w_size, w_lvol)
+
+
+def _render_backtest(run, start, end, top_n, mom_lb, vol_lb, sec_n,
+                     ev_on, sue_th, max_hold, w_mom, w_qual, w_val, w_size, w_lvol):
     if not run:
         st.info("파라미터 설정 후 **Run**을 클릭하세요."); return
-    res = run_backtest(start, end, top_n, mom_lb, vol_lb, sec_n, ev_on, sue_th, max_hold)
+    fw = {"momentum": w_mom, "quality": w_qual, "value": w_val, "size": w_size, "lowvol": w_lvol}
+    res = run_backtest(start, end, top_n, mom_lb, vol_lb, sec_n, ev_on, sue_th, max_hold, fw=fw)
     if not res:
         st.error("데이터 부족"); return
 
-    # Active result
     active = res.get("hybrid", res["mf"])
 
     # Comparison metrics

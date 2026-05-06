@@ -1,8 +1,4 @@
-"""팩터 계산 모듈.
-
-Phase 2: 5팩터 전부 구현 (Size, Value, Momentum, Quality, Low Vol).
-Sector neutral z-score 지원. compute_composite()로 통합 스코어 산출.
-"""
+"""팩터 계산: 5팩터 + SUE + gap events. Sector neutral z-score 지원."""
 from __future__ import annotations
 
 import numpy as np
@@ -47,14 +43,9 @@ def _sector_neutral_zscore(raw: pd.Series, sectors: pd.Series) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 def compute_momentum(
-    prices: pd.DataFrame,
-    lookback: int = 252,
-    skip: int = 21,
+    prices: pd.DataFrame, lookback: int = 252, skip: int = 21,
 ) -> pd.Series:
-    """12-1 momentum: lookback일 누적수익, 직전 skip일 제외.
-
-    Returns: ticker → momentum return. 데이터 부족 종목은 제외.
-    """
+    """12-1 momentum: lookback일 수익, 직전 skip일 제외."""
     close = _get_close(prices)
     if len(close) < lookback + 1:
         return pd.Series(dtype=float)
@@ -118,24 +109,11 @@ def compute_lowvol(prices: pd.DataFrame, lookback: int = 60) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 def compute_composite(
-    prices: pd.DataFrame,
-    fundamentals: pd.DataFrame | None,
-    momentum_lookback: int = 252,
-    lowvol_lookback: int = 60,
-    sector_neutral: bool = True,
-    weights: dict[str, float] | None = None,
+    prices: pd.DataFrame, fundamentals: pd.DataFrame | None,
+    momentum_lookback: int = 252, lowvol_lookback: int = 60,
+    sector_neutral: bool = True, weights: dict[str, float] | None = None,
 ) -> pd.Series:
-    """5-factor equal-weight composite score.
-
-    Args:
-        prices: MultiIndex (ticker, field) price DataFrame.
-        fundamentals: load_fundamentals() 반환값. None이면 price 기반 팩터만 사용.
-        sector_neutral: True면 sector 내 z-score 적용.
-        weights: factor name → weight. 기본 각 20%.
-
-    Returns:
-        ticker → weighted composite z-score. 높을수록 매수 후보.
-    """
+    """5-factor weighted composite score. 높을수록 매수 후보."""
     if weights is None:
         weights = {"size": 0.2, "value": 0.2, "momentum": 0.2,
                    "quality": 0.2, "lowvol": 0.2}
@@ -167,20 +145,32 @@ def compute_composite(
     return pd.DataFrame(scored).sum(axis=1).dropna()
 
 
+def compute_gap_events(
+    prices: pd.DataFrame, gap_threshold: float = 0.05, volume_multiple: float = 1.5,
+) -> pd.DataFrame:
+    """Price gap-up 이벤트 (PEAD 보완). 수익률>5% + 거래량>1.5x 평균 → SUE proxy."""
+    close = _get_close(prices)
+    try:
+        vol = prices.xs("volume", level="field", axis=1)
+    except KeyError:
+        return pd.DataFrame(columns=["ticker", "date", "sue"])
+    ret = close.pct_change()
+    high_vol = vol > vol.rolling(20).mean() * volume_multiple
+    mask = (ret > gap_threshold) & high_vol
+    mask = mask.iloc[21:]  # skip warmup
+    if "SPY" in mask.columns:
+        mask = mask.drop(columns=["SPY"])
+    hits = mask.stack()
+    hits = hits[hits]
+    if hits.empty:
+        return pd.DataFrame(columns=["ticker", "date", "sue"])
+    rows = [{"ticker": t, "date": d, "sue": float(ret.loc[d, t] / 0.05)}
+            for d, t in hits.index]
+    return pd.DataFrame(rows)
+
+
 def compute_sue(earnings: pd.DataFrame) -> pd.DataFrame:
-    """Standardized Unexpected Earnings (SUE).
-
-    SUE = (Actual EPS - Estimate EPS) / std(과거 surprise)
-
-    Look-ahead 방지: t 시점 SUE에는 t까지의 surprise만 사용.
-    최소 2개 과거 이벤트 필요 (std 계산).
-
-    Args:
-        earnings: DataFrame with ticker, date, actual_eps, estimate_eps.
-
-    Returns:
-        DataFrame with ticker, date, sue columns.
-    """
+    """SUE = (Actual - Estimate EPS) / std(past surprises). No look-ahead."""
     if earnings.empty:
         return pd.DataFrame(columns=["ticker", "date", "sue"])
 
