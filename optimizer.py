@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pickle
 from pathlib import Path
 
@@ -11,10 +12,16 @@ import pandas as pd
 
 from backtest import BacktestEngine, BacktestResult
 from data import load_fundamentals, load_prices
+from data_sharadar import (
+    load_fundamentals_history as load_sharadar_fundamentals_history,
+    load_prices as load_sharadar_prices,
+    select_fundamentals_snapshot,
+)
 from factors import compute_composite
 from portfolio import build_multifactor_portfolio
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+DATA_BACKEND = os.environ.get("QUANT_DATA_BACKEND", "yfinance").lower()
 
 UNIVERSE_TICKERS = [
     "CRWD", "DDOG", "NET", "ZS", "HUBS", "PAYC", "FTNT", "SNAP",
@@ -33,8 +40,10 @@ _FACTOR_CACHE_DIR = Path.home() / ".cache" / "quant-system" / "factors"
 _factor_mem: dict[str, pd.Series] = {}
 
 
-def _factor_cache_key(date_str: str, mom_lb: int, vol_lb: int, sec: bool, fw_str: str) -> str:
-    raw = f"{date_str}|{mom_lb}|{vol_lb}|{sec}|{fw_str}"
+def _factor_cache_key(
+    date_str: str, mom_lb: int, vol_lb: int, sec: bool, fw_str: str, backend: str
+) -> str:
+    raw = f"{backend}|{date_str}|{mom_lb}|{vol_lb}|{sec}|{fw_str}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -85,13 +94,18 @@ def backtest_with_params(
         if len(h) < mom_lb + 5:
             continue
 
-        cache_key = _factor_cache_key(str(d.date()), mom_lb, vol_lb, sec_neutral, fw_str)
+        cache_key = _factor_cache_key(
+            str(d.date()), mom_lb, vol_lb, sec_neutral, fw_str, DATA_BACKEND
+        )
         sc = _get_cached_scores(cache_key) if use_cache else None
 
         if sc is None:
             vt = h.columns.tolist()
             sp = prices.loc[:d, [c for c in prices.columns if c[0] in vt]]
-            sf = fund.loc[fund.index.isin(vt)]
+            if DATA_BACKEND == "sharadar":
+                sf = select_fundamentals_snapshot(fund, vt, d)
+            else:
+                sf = fund.loc[fund.index.isin(vt)]
             sc = compute_composite(sp, sf, momentum_lookback=mom_lb,
                                    lowvol_lookback=vol_lb, sector_neutral=sec_neutral,
                                    weights=fw)
@@ -165,8 +179,12 @@ def run_optimization(
     n_jobs: int = 1,
 ) -> optuna.Study:
     """최적화 실행. MedianPruner + JournalStorage 지원."""
-    prices = load_prices(ALL_TICKERS, start, end)
-    fund = load_fundamentals(UNIVERSE_TICKERS)
+    if DATA_BACKEND == "sharadar":
+        prices = load_sharadar_prices(ALL_TICKERS, start, end)
+        fund = load_sharadar_fundamentals_history(UNIVERSE_TICKERS)
+    else:
+        prices = load_prices(ALL_TICKERS, start, end)
+        fund = load_fundamentals(UNIVERSE_TICKERS)
 
     pruner = optuna.pruners.MedianPruner(
         n_startup_trials=10, n_warmup_steps=5)

@@ -1,12 +1,19 @@
 """Streamlit UI — Quant System (Backtest / Optimize / Robustness)."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from backtest import BacktestEngine
 from data import load_earnings, load_fundamentals, load_prices
+from data_sharadar import (
+    load_fundamentals_history as load_sharadar_fundamentals_history,
+    load_prices as load_sharadar_prices,
+    select_fundamentals_snapshot,
+)
 from factors import compute_composite, compute_gap_events, compute_quality, compute_sue, compute_value
 from portfolio import build_event_portfolio, build_multifactor_portfolio
 from risk import RiskEngine
@@ -23,14 +30,19 @@ UNIVERSE_TICKERS = [
     "ELS", "AMH",
 ]
 ALL_TICKERS = UNIVERSE_TICKERS + ["SPY"]
+DATA_BACKEND = os.environ.get("QUANT_DATA_BACKEND", "yfinance").lower()
 
 
 @st.cache_data(show_spinner="가격 데이터 로딩 중...")
 def get_prices(start: str, end: str):
+    if DATA_BACKEND == "sharadar":
+        return load_sharadar_prices(ALL_TICKERS, start, end)
     return load_prices(ALL_TICKERS, start, end)
 
 @st.cache_data(show_spinner="펀더멘탈 로딩 중...")
 def get_fundamentals():
+    if DATA_BACKEND == "sharadar":
+        return load_sharadar_fundamentals_history(UNIVERSE_TICKERS)
     return load_fundamentals(UNIVERSE_TICKERS)
 
 @st.cache_data(show_spinner="실적 데이터 로딩 중...")
@@ -62,7 +74,10 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
         if len(h) < mom_lb + 5: continue
         vt = h.columns.tolist()
         sp = prices.loc[:d, [c for c in prices.columns if c[0] in vt]]
-        sf = fund.loc[fund.index.isin(vt)]
+        if DATA_BACKEND == "sharadar":
+            sf = select_fundamentals_snapshot(fund, vt, d)
+        else:
+            sf = fund.loc[fund.index.isin(vt)]
         fweights = fw or {"momentum": 0.3, "quality": 0.25, "value": 0.2, "size": 0.1, "lowvol": 0.15}
         sc = compute_composite(sp, sf, momentum_lookback=mom_lb, lowvol_lookback=vol_lb,
                                sector_neutral=sec_neutral, weights=fweights)
@@ -80,8 +95,13 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
         gaps = compute_gap_events(prices)
         sue = pd.concat([sue, gaps], ignore_index=True).drop_duplicates(
             subset=["ticker", "date"], keep="first")
-        q = compute_quality(fund) if not fund.empty else None
-        v = compute_value(fund) if not fund.empty else None
+        latest_fund = (
+            select_fundamentals_snapshot(fund, UNIVERSE_TICKERS, prices.index[-1])
+            if DATA_BACKEND == "sharadar"
+            else fund
+        )
+        q = compute_quality(latest_fund) if not latest_fund.empty else None
+        v = compute_value(latest_fund) if not latest_fund.empty else None
         ev_w = build_event_portfolio(sue, prices, q, v, sue_threshold=sue_th, max_holding_days=max_hold)
         out["event"] = _to_dict(engine.run(ev_w.reindex(uni.index, method="ffill").fillna(0)))
         cols = sorted(set(mf_wh.columns) | set(ev_w.columns))
