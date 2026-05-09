@@ -1,11 +1,7 @@
-"""백테스트 엔진.
-
-Phase 3: commission/slippage, Calmar, monthly returns, walk-forward split.
-weights → daily returns → equity curve → metrics
-"""
+﻿"""Backtest engine and evaluation utilities."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -25,6 +21,13 @@ class BacktestResult:
     annual_turnover: float = 0.0
     total_cost: float = 0.0
     cost_drag: float = 0.0
+    benchmark_curves: dict[str, pd.Series] = field(default_factory=dict)
+    benchmark_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    monthly_turnover: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    monthly_entries: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    monthly_exits: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    average_holding_days: float = 0.0
+    invested_ratio: float = 0.0
 
 
 def _get_close(prices: pd.DataFrame) -> pd.DataFrame:
@@ -33,7 +36,7 @@ def _get_close(prices: pd.DataFrame) -> pd.DataFrame:
             return prices.xs(field, level="field", axis=1)
         except KeyError:
             continue
-    raise KeyError("prices에 close/adj_close 컬럼 없음")
+    raise KeyError("prices must include close or adj_close columns")
 
 
 def _drawdown(equity: pd.Series) -> pd.Series:
@@ -42,7 +45,7 @@ def _drawdown(equity: pd.Series) -> pd.Series:
 
 def _cagr(equity: pd.Series) -> float:
     years = len(equity) / 252
-    if years == 0 or equity.iloc[0] == 0:
+    if years == 0 or equity.empty or equity.iloc[0] == 0:
         return 0.0
     return float((equity.iloc[-1] / equity.iloc[0]) ** (1.0 / years) - 1)
 
@@ -50,11 +53,43 @@ def _cagr(equity: pd.Series) -> float:
 def _sharpe(daily_ret: pd.Series, rf_annual: float = 0.0) -> float:
     excess = daily_ret - rf_annual / 252
     std = excess.std()
-    return float(excess.mean() / std * np.sqrt(252)) if std > 0 else 0.0
+    return float(excess.mean() / std * np.sqrt(252)) if std and std > 0 else 0.0
 
 
 def _calmar(cagr_val: float, max_dd: float) -> float:
     return abs(cagr_val / max_dd) if max_dd != 0 else 0.0
+
+
+def _average_holding_days(holdings: pd.DataFrame) -> float:
+    durations: list[int] = []
+    for ticker in holdings.columns:
+        active = holdings[ticker].astype(bool)
+        if active.empty:
+            continue
+        start = None
+        for idx, value in enumerate(active.tolist()):
+            if value and start is None:
+                start = idx
+            elif not value and start is not None:
+                durations.append(idx - start)
+                start = None
+        if start is not None:
+            durations.append(len(active) - start)
+    return float(np.mean(durations)) if durations else 0.0
+
+
+def _build_benchmark_curve(series: pd.Series, initial_capital: float) -> tuple[pd.Series, dict[str, float]]:
+    ret = series.pct_change(fill_method=None).fillna(0.0)
+    equity = (1 + ret).cumprod() * initial_capital
+    dd = _drawdown(equity)
+    stats = {
+        "total_return": float(equity.iloc[-1] / initial_capital - 1),
+        "cagr": _cagr(equity),
+        "sharpe": _sharpe(ret),
+        "max_drawdown": float(dd.min()),
+        "calmar": _calmar(_cagr(equity), float(dd.min())),
+    }
+    return equity, stats
 
 
 class BacktestEngine:
@@ -66,14 +101,6 @@ class BacktestEngine:
         slippage_bps: float = 30.0,
         cost_config=None,
     ):
-        """
-        Args:
-            prices: MultiIndex columns (ticker, field).
-            initial_capital: 초기 자본금.
-            commission_bps: 편도 수수료 (bps). cost_config 없을 때 사용.
-            slippage_bps: 편도 슬리피지 (bps). cost_config 없을 때 사용.
-            cost_config: CostConfig 인스턴스. 있으면 bps 파라미터 무시.
-        """
         self.prices = prices
         self.initial_capital = initial_capital
         if cost_config is not None:
@@ -81,66 +108,99 @@ class BacktestEngine:
         else:
             self.cost_rate = (commission_bps + slippage_bps) / 10_000
 
-    def run(self, weights_history: pd.DataFrame) -> BacktestResult:
-        """weights_history: index=date, columns=tickers, values=target weight.
-
-        Look-ahead 방지: t일 weight → t+1일 수익에 적용.
-        Transaction cost: turnover × (commission + slippage).
-        """
+    def run(self, weights_history: pd.DataFrame, eval_start: str | pd.Timestamp | None = None) -> BacktestResult:
         close = _get_close(self.prices)
 
-        w = weights_history.reindex(close.index, method="ffill").fillna(0)
-        w = w.reindex(columns=close.columns, fill_value=0)
+        w = weights_history.reindex(close.index, method="ffill").fillna(0.0)
+        w = w.reindex(columns=close.columns, fill_value=0.0)
 
-        daily_ret = close.pct_change()
-        w_prev = w.shift(1).fillna(0)
-        port_ret = (w_prev * daily_ret).sum(axis=1)
+        daily_ret = close.pct_change(fill_method=None).fillna(0.0)
+        w_prev = w.shift(1).fillna(0.0)
+        gross_exposure = w_prev.abs().sum(axis=1)
+        raw_port_ret = (w_prev * daily_ret).sum(axis=1)
 
-        # Transaction cost: 턴오버 × cost_rate
-        turnover = w.diff().abs().sum(axis=1)
-        port_ret = port_ret - turnover * self.cost_rate
-        port_ret.iloc[0] = 0.0
+        turnover = w.diff().abs().sum(axis=1).fillna(0.0)
+        port_ret = raw_port_ret - turnover * self.cost_rate
+        if not port_ret.empty:
+            port_ret.iloc[0] = 0.0
 
-        equity = (1 + port_ret).cumprod() * self.initial_capital
-        dd = _drawdown(equity)
+        full_equity = (1 + port_ret).cumprod() * self.initial_capital
+        full_dd = _drawdown(full_equity)
 
-        # Benchmark (SPY)
-        if "SPY" in close.columns:
-            bench_ret = close["SPY"].pct_change().fillna(0)
-            bench_curve = (1 + bench_ret).cumprod() * self.initial_capital
+        if eval_start is not None:
+            eval_start_ts = pd.Timestamp(eval_start)
+            eval_index = close.index[close.index >= eval_start_ts]
         else:
-            bench_curve = pd.Series(self.initial_capital, index=equity.index)
+            eval_index = close.index
+        if len(eval_index) == 0:
+            raise ValueError("No evaluation dates available after eval_start.")
 
-        cagr_val = _cagr(equity)
-        max_dd = float(dd.min())
+        port_ret_eval = port_ret.loc[eval_index]
+        turnover_eval = turnover.loc[eval_index]
+        equity = (1 + port_ret_eval).cumprod() * self.initial_capital
+        dd = _drawdown(equity)
         monthly = equity.resample("ME").last().pct_change().dropna()
 
-        # 비용 메트릭
-        total_turnover = float(turnover.sum())
-        years = len(equity) / 252
-        annual_turnover = total_turnover / years if years > 0 else 0.0
-        total_cost_abs = float(turnover.sum() * self.cost_rate * self.initial_capital)
+        monthly_turnover = turnover_eval.resample("ME").sum().fillna(0.0)
 
-        # Cost drag: 비용 없는 CAGR과 비교
-        port_ret_nocost = (w_prev * daily_ret).sum(axis=1)
-        port_ret_nocost.iloc[0] = 0.0
-        equity_nocost = (1 + port_ret_nocost).cumprod() * self.initial_capital
+        holdings = (w_prev.abs() > 1e-12).astype(bool).loc[eval_index]
+        holdings_prev = holdings.shift(1, fill_value=False).astype(bool)
+        daily_entries = (holdings & ~holdings_prev).sum(axis=1)
+        daily_exits = (~holdings & holdings_prev).sum(axis=1)
+        monthly_entries = daily_entries.resample("ME").sum().astype(float)
+        monthly_exits = daily_exits.resample("ME").sum().astype(float)
+        avg_holding_days = _average_holding_days(holdings)
+        invested_ratio = float((gross_exposure.loc[eval_index] > 1e-12).mean()) if len(eval_index) else 0.0
+
+        years = len(equity) / 252
+        total_turnover = float(turnover_eval.sum())
+        annual_turnover = total_turnover / years if years > 0 else 0.0
+        total_cost_abs = float(turnover_eval.sum() * self.cost_rate * self.initial_capital)
+
+        port_ret_nocost = raw_port_ret.copy()
+        if not port_ret_nocost.empty:
+            port_ret_nocost.iloc[0] = 0.0
+        port_ret_nocost_eval = port_ret_nocost.loc[eval_index]
+        equity_nocost = (1 + port_ret_nocost_eval).cumprod() * self.initial_capital
+        cagr_val = _cagr(equity)
         cagr_nocost = _cagr(equity_nocost)
+        max_dd = float(dd.min())
         cost_drag = cagr_nocost - cagr_val
+
+        benchmark_curves: dict[str, pd.Series] = {}
+        benchmark_stats: dict[str, dict[str, float]] = {}
+        for bench in ("SPY", "QQQ", "IWM"):
+            if bench not in close.columns:
+                continue
+            curve, stats = _build_benchmark_curve(close[bench].loc[eval_index], self.initial_capital)
+            benchmark_curves[bench] = curve
+            benchmark_stats[bench] = stats
+
+        benchmark_curve = benchmark_curves.get(
+            "SPY",
+            pd.Series(self.initial_capital, index=equity.index),
+        )
 
         return BacktestResult(
             equity_curve=equity,
             drawdown=dd,
             total_return=float(equity.iloc[-1] / self.initial_capital - 1),
             cagr=cagr_val,
-            sharpe=_sharpe(port_ret),
+            sharpe=_sharpe(port_ret_eval),
             max_drawdown=max_dd,
             calmar=_calmar(cagr_val, max_dd),
             monthly_returns=monthly,
-            benchmark_curve=bench_curve,
+            benchmark_curve=benchmark_curve,
             annual_turnover=annual_turnover,
             total_cost=total_cost_abs,
             cost_drag=cost_drag,
+            benchmark_curves=benchmark_curves,
+            benchmark_stats=benchmark_stats,
+            monthly_turnover=monthly_turnover,
+            monthly_entries=monthly_entries,
+            monthly_exits=monthly_exits,
+            average_holding_days=avg_holding_days,
+            invested_ratio=invested_ratio,
         )
 
 
@@ -149,11 +209,7 @@ def walk_forward_split(
     train_years: int = 5,
     test_years: int = 1,
 ) -> list[dict]:
-    """Equity curve를 walk-forward 윈도우로 분할.
-
-    IS/OS Sharpe 비교로 과적합 점검.
-    Returns list of {window, period, train_sharpe, test_sharpe, test_cagr}.
-    """
+    """Split an equity curve into rolling walk-forward windows."""
     start_year = equity.index[0].year
     end_year = equity.index[-1].year
     results = []
@@ -165,12 +221,17 @@ def walk_forward_split(
         if len(train_eq) < 100 or len(test_eq) < 50:
             continue
 
-        results.append({
-            "window": i + 1,
-            "period": f"{y}–{y + train_years + test_years - 1}",
-            "train_sharpe": round(_sharpe(train_eq.pct_change().dropna()), 3),
-            "test_sharpe": round(_sharpe(test_eq.pct_change().dropna()), 3),
-            "test_cagr": round(_cagr(test_eq), 4),
-        })
+        results.append(
+            {
+                "window": i + 1,
+                "period": f"{y}-{y + train_years + test_years - 1}",
+                "train_sharpe": round(_sharpe(train_eq.pct_change().dropna()), 3),
+                "test_sharpe": round(_sharpe(test_eq.pct_change().dropna()), 3),
+                "test_cagr": round(_cagr(test_eq), 4),
+            }
+        )
 
     return results
+
+
+

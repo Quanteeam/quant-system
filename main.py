@@ -1,9 +1,9 @@
-"""CLI 진입점.
+﻿"""CLI entrypoint.
 
 Usage:
-    python main.py backtest    → 콘솔 백테스트 (기본 파라미터)
-    python main.py ui          → streamlit run app.py
-    python main.py kill        → NotImplementedError (Phase 5+)
+    python main.py backtest
+    python main.py ui
+    python main.py kill
 """
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ import sys
 
 def cmd_backtest() -> None:
     import pandas as pd
+    from backtest import BacktestEngine
     from config import DEFAULT_CONFIG
-    from data import load_prices
+    from data_backend import load_prices
     from factors import compute_momentum
     from portfolio import build_multifactor_portfolio
-    from backtest import BacktestEngine
 
     cfg = DEFAULT_CONFIG
+
     tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "SPY"]
     print(f"Loading prices {cfg.backtest.start_date} ~ {cfg.backtest.end_date} ...")
     prices = load_prices(tickers, cfg.backtest.start_date, cfg.backtest.end_date)
@@ -51,14 +52,14 @@ def cmd_ui() -> None:
 
 
 def cmd_kill() -> None:
-    """Emergency kill switch: 전 포지션 청산 + 신규 주문 차단."""
     from pathlib import Path
+
     kill_file = Path("KILL_SWITCH")
     kill_file.touch()
-    print("⚠ KILL SWITCH ACTIVATED")
-    print("  - KILL_SWITCH 파일 생성됨")
-    print("  - 모든 시스템 halt (Phase 7에서 broker 연동)")
-    print("  - 해제: KILL_SWITCH 파일 삭제")
+    print("KILL SWITCH ACTIVATED")
+    print("  - KILL_SWITCH file created")
+    print("  - All live processes should halt when broker integration is enabled")
+    print("  - To resume: remove the KILL_SWITCH file")
 
 
 COMMANDS = {"backtest": cmd_backtest, "ui": cmd_ui, "kill": cmd_kill}
@@ -73,3 +74,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

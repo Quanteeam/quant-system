@@ -1,4 +1,4 @@
-"""Walk-Forward Optimization — 오버피팅 방지 검증."""
+﻿"""Walk-Forward Optimization ???ㅻ쾭?쇳똿 諛⑹? 寃利?"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import optuna
 import pandas as pd
 
-from data import load_fundamentals, load_prices
+from data_backend import load_fundamentals, load_prices, load_quarterly_cache
 from optimizer import (ALL_TICKERS, UNIVERSE_TICKERS, backtest_with_params,
                        best_params_to_fw, create_objective)
 
@@ -36,18 +36,19 @@ def run_walk_forward(
     metric: str = "sharpe",
     on_progress=None,
 ) -> list[WFOWindow]:
-    """Walk-forward: train N년 → test 1년, 1년 단위 롤링.
+    """Walk-forward: train N????test 1?? 1???⑥쐞 濡ㅻ쭅.
 
     on_progress(window_idx, total_windows, trial_idx, n_trials, best_value)
     """
     prices = load_prices(ALL_TICKERS, full_start, full_end)
     fund = load_fundamentals(UNIVERSE_TICKERS)
+    qcache = load_quarterly_cache(UNIVERSE_TICKERS)
 
     start_year = int(full_start[:4])
     end_year = int(full_end[:4])
     results: list[WFOWindow] = []
 
-    # 전체 윈도우 수 미리 계산
+    # ?꾩껜 ?덈룄????誘몃━ 怨꾩궛
     all_years = list(range(start_year, end_year - train_years - test_years + 2))
     total_windows = len(all_years)
 
@@ -59,12 +60,12 @@ def run_walk_forward(
         test_e = f"{y + train_years + test_years - 1}-12-31"
         win += 1
 
-        # Train 구간 prices 슬라이싱
+        # Train 援ш컙 prices ?щ씪?댁떛
         train_prices = prices.loc[train_s:train_e]
         if len(train_prices) < 252:
             continue
 
-        # IS 최적화
+        # IS 理쒖쟻??
         study = optuna.create_study(direction="maximize", study_name=f"wfo_w{win}",
                                     storage=None)
 
@@ -73,24 +74,24 @@ def run_walk_forward(
                 best_v = study.best_value if study.best_trial else None
                 on_progress(_w, _tw, trial.number + 1, n_trials, best_v)
 
-        study.optimize(create_objective(train_prices, fund, metric),
+        study.optimize(create_objective(train_prices, fund, metric, quarterly_cache=qcache),
                        n_trials=n_trials, callbacks=[_wfo_callback])
         bp = study.best_params
 
-        # IS 성과
+        # IS ?깃낵
         fw = best_params_to_fw(bp)
         is_result = backtest_with_params(
             train_prices, fund, bp["top_n"], bp["momentum_lb"], bp["low_vol_lb"],
-            bp["sector_neutral"], fw)
+            bp["sector_neutral"], fw, quarterly_cache=qcache)
         is_sharpe = is_result.sharpe if is_result else 0.0
 
-        # OOS 성과 (best params 고정)
+        # OOS ?깃낵 (best params 怨좎젙)
         test_prices = prices.loc[test_s:test_e]
         if len(test_prices) < 60:
             continue
         oos_result = backtest_with_params(
             test_prices, fund, bp["top_n"], bp["momentum_lb"], bp["low_vol_lb"],
-            bp["sector_neutral"], fw)
+            bp["sector_neutral"], fw, quarterly_cache=qcache)
 
         if oos_result is None:
             continue
@@ -106,7 +107,7 @@ def run_walk_forward(
 
 
 def summarize_wfo(results: list[WFOWindow]) -> pd.DataFrame:
-    """WFO 결과 요약 테이블."""
+    """WFO 寃곌낵 ?붿빟 ?뚯씠釉?"""
     if not results:
         return pd.DataFrame()
     rows = []
@@ -130,3 +131,5 @@ if __name__ == "__main__":
     if results:
         oos_sharpes = [r.oos_sharpe for r in results]
         print(f"\nOOS Sharpe mean: {sum(oos_sharpes)/len(oos_sharpes):.3f}")
+
+

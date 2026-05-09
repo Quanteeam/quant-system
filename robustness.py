@@ -1,4 +1,4 @@
-"""Robustness 시각화 — 파라미터 민감도, 분포, 롤링 성과, 일관성 체크."""
+﻿"""Robustness ?쒓컖?????뚮씪誘명꽣 誘쇨컧?? 遺꾪룷, 濡ㅻ쭅 ?깃낵, ?쇨???泥댄겕."""
 from __future__ import annotations
 
 import numpy as np
@@ -16,8 +16,9 @@ from optimizer import backtest_with_params, best_params_to_fw, _normalize_weight
 def compute_heatmap(
     prices: pd.DataFrame, fund: pd.DataFrame, base_params: dict,
     x_range: tuple = (0.10, 0.50, 0.05), y_range: tuple = (0.10, 0.40, 0.05),
+    quarterly_cache: dict | None = None,
 ) -> tuple[np.ndarray, list[float], list[float], float, float]:
-    """Momentum(X) × Quality(Y) Sharpe heatmap 계산."""
+    """Momentum(X) 횞 Quality(Y) Sharpe heatmap 怨꾩궛."""
     x_vals = list(np.arange(x_range[0], x_range[1] + 0.001, x_range[2]))
     y_vals = list(np.arange(y_range[0], y_range[1] + 0.001, y_range[2]))
     z = np.zeros((len(y_vals), len(x_vals)))
@@ -35,7 +36,7 @@ def compute_heatmap(
                 prices, fund, base_params.get("top_n", 20),
                 base_params.get("momentum_lb", 252),
                 base_params.get("low_vol_lb", 60),
-                base_params.get("sector_neutral", True), fw)
+                base_params.get("sector_neutral", True), fw, quarterly_cache=quarterly_cache)
             z[i, j] = r.sharpe if r else 0.0
 
     return z, x_vals, y_vals, best_x, best_y
@@ -46,14 +47,14 @@ def plot_heatmap(z, x_vals, y_vals, best_x, best_y) -> go.Figure:
         z=z, x=[f"{v:.2f}" for v in x_vals], y=[f"{v:.2f}" for v in y_vals],
         colorscale="Viridis", colorbar_title="Sharpe",
     ))
-    # Best 위치 마커
+    # Best ?꾩튂 留덉빱
     fig.add_trace(go.Scatter(
         x=[f"{best_x:.2f}"], y=[f"{best_y:.2f}"],
-        mode="markers+text", text=["★ Best"], textposition="top center",
+        mode="markers+text", text=["??Best"], textposition="top center",
         marker=dict(size=16, color="red", symbol="star"),
         showlegend=False,
     ))
-    fig.update_layout(title="Parameter Sensitivity: Momentum × Quality → Sharpe",
+    fig.update_layout(title="Parameter Sensitivity: Momentum 횞 Quality ??Sharpe",
                       xaxis_title="Momentum Weight", yaxis_title="Quality Weight",
                       template="plotly_dark")
     return fig
@@ -144,12 +145,12 @@ def plot_topk_consistency(study: optuna.Study, k: int = 10) -> go.Figure:
         fig.add_trace(go.Box(y=vals, name=label, marker_color=colors[i],
                              boxmean=True))
 
-    fig.update_layout(title=f"Top {k} Trials — Factor Weight Distribution",
+    fig.update_layout(title=f"Top {k} Trials ??Factor Weight Distribution",
                       yaxis_title="Normalized Weight", template="plotly_dark")
     return fig, data
 
 
-# --- 종합 판정 ---
+# --- 醫낇빀 ?먯젙 ---
 
 def assess_robustness(
     z_heatmap: np.ndarray, best_x_idx: int, best_y_idx: int, best_sharpe: float,
@@ -157,10 +158,10 @@ def assess_robustness(
     roll_sharpe: pd.Series,
     topk_data: dict[str, list[float]],
 ) -> tuple[str, dict[str, bool]]:
-    """4개 기준으로 robustness 판정."""
+    """4媛?湲곗??쇰줈 robustness ?먯젙."""
     checks = {}
 
-    # 1. Heatmap: best 주변 5×5 평균 > best의 80%
+    # 1. Heatmap: best 二쇰? 5횞5 ?됯퇏 > best??80%
     pad = 2
     y_s = max(0, best_y_idx - pad)
     y_e = min(z_heatmap.shape[0], best_y_idx + pad + 1)
@@ -169,7 +170,7 @@ def assess_robustness(
     neighborhood_mean = z_heatmap[y_s:y_e, x_s:x_e].mean()
     checks["heatmap_stable"] = neighborhood_mean > best_sharpe * 0.8
 
-    # 2. Trials: best가 95th percentile 이내
+    # 2. Trials: best媛 95th percentile ?대궡
     vals = [t.value for t in study.trials if t.value and t.value > -100]
     if vals:
         p95 = np.percentile(vals, 95)
@@ -177,7 +178,7 @@ def assess_robustness(
     else:
         checks["within_95pct"] = False
 
-    # 3. Rolling: 음수 Sharpe 기간 < 20%
+    # 3. Rolling: ?뚯닔 Sharpe 湲곌컙 < 20%
     valid = roll_sharpe.dropna()
     if len(valid) > 0:
         neg_ratio = (valid < 0).sum() / len(valid)
@@ -185,7 +186,7 @@ def assess_robustness(
     else:
         checks["rolling_consistent"] = False
 
-    # 4. Top-K 가중치 std < 0.05
+    # 4. Top-K 媛以묒튂 std < 0.05
     stds = [np.std(v) for v in topk_data.values()]
     checks["params_tight"] = np.mean(stds) < 0.05
 
@@ -198,3 +199,5 @@ def assess_robustness(
         verdict = "Likely Overfit"
 
     return verdict, checks
+
+

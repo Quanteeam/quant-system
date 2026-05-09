@@ -1,4 +1,4 @@
-"""Optuna 기반 하이퍼파라미터 최적화 (Multi-factor sleeve)."""
+﻿"""Optuna 湲곕컲 ?섏씠?쇳뙆?쇰???理쒖쟻??(Multi-factor sleeve)."""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +10,8 @@ import optuna
 import pandas as pd
 
 from backtest import BacktestEngine, BacktestResult, _cagr, _sharpe, _drawdown, _calmar
-from data import load_fundamentals, load_prices, load_quarterly_cache, get_pit_fundamentals
+from config import DEFAULT_CONFIG
+from data_backend import load_fundamentals, load_prices, load_quarterly_cache, get_pit_fundamentals
 from factors import compute_composite
 from portfolio import build_multifactor_portfolio
 from transaction_cost import CostConfig
@@ -35,7 +36,7 @@ _factor_mem: dict[str, pd.Series] = {}
 
 
 def _factor_cache_key(date_str: str, mom_lb: int, vol_lb: int, sec: bool, fw_str: str) -> str:
-    raw = f"{date_str}|{mom_lb}|{vol_lb}|{sec}|{fw_str}"
+    raw = f"{DEFAULT_CONFIG.data.backend}|{date_str}|{mom_lb}|{vol_lb}|{sec}|{fw_str}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -73,7 +74,7 @@ def backtest_with_params(
     tf_mode: str = "soft",
     quarterly_cache: dict | None = None,
 ) -> BacktestResult | None:
-    """순수 함수: 파라미터 → BacktestResult. PIT 펀더멘탈 + trend filter 지원."""
+    """?쒖닔 ?⑥닔: ?뚮씪誘명꽣 ??BacktestResult. PIT ??붾찘??+ trend filter 吏??"""
     for f_name in ("adj_close", "close"):
         try:
             close = prices.xs(f_name, level="field", axis=1)
@@ -125,11 +126,11 @@ def backtest_with_params(
     engine = BacktestEngine(prices, cost_config=cc)
     result = engine.run(mf_wh)
 
-    # Trend filter 후처리
+    # Trend filter ?꾩쿂由?
     if tf_enable and "SPY" in close.columns:
         bench_close = close["SPY"].reindex(uni.index, method="ffill")
         ma = bench_close.rolling(tf_ma_period, min_periods=tf_ma_period).mean()
-        above = (bench_close >= ma).shift(1)  # look-ahead 방지
+        above = (bench_close >= ma).shift(1)  # look-ahead 諛⑹?
 
         if tf_mode == "hard":
             mult = above.astype(float)
@@ -161,7 +162,7 @@ def backtest_with_params(
 
 
 def _normalize_weights(w_mom, w_qual, w_val, w_size, w_lvol) -> dict[str, float]:
-    """가중치 합 = 1.0 정규화. 음수 방지."""
+    """媛以묒튂 ??= 1.0 ?뺢퇋?? ?뚯닔 諛⑹?."""
     total = w_mom + w_qual + w_val + w_size + w_lvol
     if total <= 0:
         return {"momentum": 0.2, "quality": 0.2, "value": 0.2, "size": 0.2, "lowvol": 0.2}
@@ -229,9 +230,10 @@ def run_optimization(
     study_name: str = "quant_mf",
     n_jobs: int = 1,
 ) -> optuna.Study:
-    """최적화 실행. MedianPruner + JournalStorage 지원."""
+    """理쒖쟻???ㅽ뻾. MedianPruner + JournalStorage 吏??"""
     prices = load_prices(ALL_TICKERS, start, end)
     fund = load_fundamentals(UNIVERSE_TICKERS)
+    qcache = load_quarterly_cache(UNIVERSE_TICKERS)
 
     pruner = optuna.pruners.MedianPruner(
         n_startup_trials=10, n_warmup_steps=5)
@@ -240,13 +242,13 @@ def run_optimization(
         direction="maximize", study_name=study_name,
         storage=storage, load_if_exists=True, pruner=pruner,
     )
-    study.optimize(create_objective(prices, fund, metric),
+    study.optimize(create_objective(prices, fund, metric, quarterly_cache=qcache),
                    n_trials=n_trials, n_jobs=n_jobs)
     return study
 
 
 def best_params_to_fw(params: dict) -> dict[str, float]:
-    """study.best_params → factor weights dict."""
+    """study.best_params ??factor weights dict."""
     return _normalize_weights(
         params["w_momentum"], params["w_quality"], params["w_value"],
         params["w_size"], params["w_lowvol"],
@@ -257,3 +259,5 @@ if __name__ == "__main__":
     study = run_optimization(n_trials=10, storage=None)
     print(f"Best {study.best_value:.3f}")
     print(f"Params: {study.best_params}")
+
+
