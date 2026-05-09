@@ -8,9 +8,10 @@ import streamlit as st
 
 from analyze import (find_robust_region, plot_parallel_coordinates,
                      plot_sensitivity, sensitivity_analysis, top_trials_df)
-from data import load_fundamentals, load_prices
+from data import load_fundamentals, load_prices, load_quarterly_cache
 from optimizer import (ALL_TICKERS, UNIVERSE_TICKERS, backtest_with_params,
                        best_params_to_fw, create_objective, _normalize_weights)
+from transaction_cost import CostConfig
 from wfo import run_walk_forward, summarize_wfo
 
 import optuna
@@ -40,12 +41,14 @@ def render_optimize_tab():
         n_trials = st.slider("Trials", 10, 300, int(default_trials), key="n_trials")
         metric = st.selectbox("목적함수", ["sharpe", "calmar", "sortino"], key="metric")
 
+    incl_tf = st.checkbox("Trend Filter도 최적화에 포함", value=True, key="incl_tf")
+
     c1, c2 = st.columns(2)
     run_opt = c1.button("Run Optimization", type="primary", use_container_width=True)
     run_wfo = c2.button("Run Walk-Forward", use_container_width=True)
 
     if run_opt:
-        _run_optimization(opt_start, opt_end, n_trials, metric)
+        _run_optimization(opt_start, opt_end, n_trials, metric, incl_tf)
     if run_wfo:
         train_yrs = int(default_train)
         # test_years must be int for WFO window slicing
@@ -61,13 +64,14 @@ def render_optimize_tab():
         pass
 
 
-def _run_optimization(start, end, n_trials, metric):
+def _run_optimization(start, end, n_trials, metric, include_tf=False):
     """Optuna 최적화 실행 — ETA 표시."""
     prices = load_prices(ALL_TICKERS, start, end)
     fund = load_fundamentals(UNIVERSE_TICKERS)
 
     pruner = optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=5)
-    study = optuna.create_study(direction="maximize", study_name="quant_mf",
+    study_name = "quant_mf_tf" if include_tf else "quant_mf"
+    study = optuna.create_study(direction="maximize", study_name=study_name,
                                 storage="sqlite:///optuna.db",
                                 load_if_exists=True, pruner=pruner)
 
@@ -90,7 +94,12 @@ def _run_optimization(start, end, n_trials, metric):
                     f"Best: {study.best_value:.3f} | "
                     f"잔여: {eta_str}")
 
-    study.optimize(create_objective(prices, fund, metric),
+    cc = CostConfig()  # realistic cost
+    qcache = load_quarterly_cache(UNIVERSE_TICKERS)
+    study.optimize(create_objective(prices, fund, metric,
+                                    include_trend_filter=include_tf,
+                                    cost_config=cc,
+                                    quarterly_cache=qcache),
                    n_trials=n_trials, callbacks=[callback])
     progress.empty()
     elapsed_total = time.time() - t_start
@@ -99,22 +108,49 @@ def _run_optimization(start, end, n_trials, metric):
 
     bp = study.best_params
     fw = best_params_to_fw(bp)
-    st.json({"best_params": bp, "normalized_weights": fw})
+    display = {"best_params": bp, "normalized_weights": fw}
+    if "tf_enable" in bp:
+        display["trend_filter"] = {
+            "enable": bp["tf_enable"],
+            "ma_period": bp.get("tf_ma_period", "N/A"),
+            "mode": bp.get("tf_mode", "N/A"),
+        }
+    st.json(display)
     st.session_state["best_params"] = bp
     st.session_state["best_fw"] = fw
 
 
 def _run_wfo(start, end, n_trials, metric, train_years, test_years):
-    """Walk-Forward — ETA 표시."""
+    """Walk-Forward — 진행도 표시."""
+    progress = st.progress(0)
     status = st.empty()
-    status.info("Walk-Forward 실행 중...")
     t0 = time.time()
+
+    def on_progress(win_idx, total_wins, trial_idx, total_trials, best_val):
+        # 전체 진행률 = (완료된 윈도우 + 현재 윈도우 내 trial 비율) / 총 윈도우
+        pct = ((win_idx - 1) + trial_idx / total_trials) / total_wins
+        pct = min(pct, 1.0)
+        progress.progress(pct)
+        elapsed = time.time() - t0
+        total_work = total_wins * total_trials
+        done_work = (win_idx - 1) * total_trials + trial_idx
+        if done_work > 1:
+            eta = elapsed / done_work * (total_work - done_work)
+            eta_str = f"{int(eta // 60)}분 {int(eta % 60)}초"
+        else:
+            eta_str = "계산 중..."
+        best_str = f" | Best: {best_val:.3f}" if best_val is not None else ""
+        status.text(f"Window {win_idx}/{total_wins} · "
+                    f"Trial {trial_idx}/{total_trials}{best_str} · "
+                    f"잔여: {eta_str}")
 
     results = run_walk_forward(
         full_start=start, full_end=end,
         train_years=train_years, test_years=test_years,
-        n_trials=n_trials, metric=metric)
+        n_trials=n_trials, metric=metric,
+        on_progress=on_progress)
 
+    progress.empty()
     elapsed = time.time() - t0
     status.success(f"WFO 완료! ({int(elapsed)}초)")
 

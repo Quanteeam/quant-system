@@ -43,8 +43,8 @@ def apply_trend_filter(
     bench_close = close[bench]
     ma = bench_close.rolling(config.ma_period, min_periods=config.ma_period).mean()
 
-    # 각 날짜별 multiplier
-    above_ma = bench_close >= ma
+    # 각 날짜별 multiplier — T일 종가 신호 → T+1일 적용 (look-ahead 방지)
+    above_ma = (bench_close >= ma).shift(1)
     if config.mode == "hard":
         multiplier = above_ma.astype(float)  # 1.0 or 0.0
     else:

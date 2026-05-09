@@ -9,10 +9,11 @@ import numpy as np
 import optuna
 import pandas as pd
 
-from backtest import BacktestEngine, BacktestResult
-from data import load_fundamentals, load_prices
+from backtest import BacktestEngine, BacktestResult, _cagr, _sharpe, _drawdown, _calmar
+from data import load_fundamentals, load_prices, load_quarterly_cache, get_pit_fundamentals
 from factors import compute_composite
 from portfolio import build_multifactor_portfolio
+from transaction_cost import CostConfig
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -66,8 +67,13 @@ def backtest_with_params(
     sec_neutral: bool = True,
     fw: dict[str, float] | None = None,
     use_cache: bool = True,
+    cost_config: CostConfig | None = None,
+    tf_enable: bool = False,
+    tf_ma_period: int = 200,
+    tf_mode: str = "soft",
+    quarterly_cache: dict | None = None,
 ) -> BacktestResult | None:
-    """순수 함수: 파라미터 → BacktestResult. 팩터 캐싱 지원."""
+    """순수 함수: 파라미터 → BacktestResult. PIT 펀더멘탈 + trend filter 지원."""
     for f_name in ("adj_close", "close"):
         try:
             close = prices.xs(f_name, level="field", axis=1)
@@ -78,6 +84,7 @@ def backtest_with_params(
     uni = close[[t for t in UNIVERSE_TICKERS if t in close.columns]]
     rebal = uni.resample("ME").last().index
     fw_str = str(sorted((fw or {}).items()))
+    use_pit = quarterly_cache is not None
 
     rows = []
     for d in rebal:
@@ -85,13 +92,19 @@ def backtest_with_params(
         if len(h) < mom_lb + 5:
             continue
 
-        cache_key = _factor_cache_key(str(d.date()), mom_lb, vol_lb, sec_neutral, fw_str)
+        pit_tag = "pit" if use_pit else "snap"
+        cache_key = _factor_cache_key(
+            f"{d.date()}|{pit_tag}", mom_lb, vol_lb, sec_neutral, fw_str)
         sc = _get_cached_scores(cache_key) if use_cache else None
 
         if sc is None:
             vt = h.columns.tolist()
             sp = prices.loc[:d, [c for c in prices.columns if c[0] in vt]]
-            sf = fund.loc[fund.index.isin(vt)]
+            if use_pit:
+                sf = get_pit_fundamentals(quarterly_cache, uni.loc[:d].iloc[-1], d)
+                sf = sf.loc[sf.index.isin(vt)] if not sf.empty else sf
+            else:
+                sf = fund.loc[fund.index.isin(vt)]
             sc = compute_composite(sp, sf, momentum_lookback=mom_lb,
                                    lowvol_lookback=vol_lb, sector_neutral=sec_neutral,
                                    weights=fw)
@@ -107,8 +120,44 @@ def backtest_with_params(
 
     mf_wh = pd.DataFrame([w for _, w in rows], index=[d for d, _ in rows]).fillna(0)
     mf_wh = mf_wh.reindex(uni.index, method="ffill").fillna(0)
-    engine = BacktestEngine(prices, commission_bps=1, slippage_bps=30)
-    return engine.run(mf_wh)
+
+    cc = cost_config or CostConfig()
+    engine = BacktestEngine(prices, cost_config=cc)
+    result = engine.run(mf_wh)
+
+    # Trend filter 후처리
+    if tf_enable and "SPY" in close.columns:
+        bench_close = close["SPY"].reindex(uni.index, method="ffill")
+        ma = bench_close.rolling(tf_ma_period, min_periods=tf_ma_period).mean()
+        above = (bench_close >= ma).shift(1)  # look-ahead 방지
+
+        if tf_mode == "hard":
+            mult = above.astype(float)
+        else:
+            mult = above.astype(float) * 0.5 + 0.5
+        mult = mult.fillna(1.0)
+
+        daily_ret = result.equity_curve.pct_change().fillna(0)
+        rf_daily = 0.04 / 252
+        filtered_ret = daily_ret * mult + rf_daily * (1 - mult)
+        filtered_eq = (1 + filtered_ret).cumprod() * result.equity_curve.iloc[0]
+
+        dd = _drawdown(filtered_eq)
+        cagr_val = _cagr(filtered_eq)
+        max_dd = float(dd.min())
+        monthly = filtered_eq.resample("ME").last().pct_change().dropna()
+
+        result = BacktestResult(
+            equity_curve=filtered_eq, drawdown=dd,
+            total_return=float(filtered_eq.iloc[-1] / filtered_eq.iloc[0] - 1),
+            cagr=cagr_val, sharpe=_sharpe(filtered_ret),
+            max_drawdown=max_dd, calmar=_calmar(cagr_val, max_dd),
+            monthly_returns=monthly, benchmark_curve=result.benchmark_curve,
+            annual_turnover=result.annual_turnover,
+            total_cost=result.total_cost, cost_drag=result.cost_drag,
+        )
+
+    return result
 
 
 def _normalize_weights(w_mom, w_qual, w_val, w_size, w_lvol) -> dict[str, float]:
@@ -122,8 +171,11 @@ def _normalize_weights(w_mom, w_qual, w_val, w_size, w_lvol) -> dict[str, float]
     }
 
 
-def create_objective(prices: pd.DataFrame, fund: pd.DataFrame, metric: str = "sharpe"):
-    """Optuna objective factory with pruning support."""
+def create_objective(prices: pd.DataFrame, fund: pd.DataFrame, metric: str = "sharpe",
+                     include_trend_filter: bool = False,
+                     cost_config: CostConfig | None = None,
+                     quarterly_cache: dict | None = None):
+    """Optuna objective factory with pruning + trend filter + PIT support."""
 
     def objective(trial: optuna.Trial) -> float:
         top_n = trial.suggest_int("top_n", 20, 50, step=10)
@@ -138,7 +190,20 @@ def create_objective(prices: pd.DataFrame, fund: pd.DataFrame, metric: str = "sh
         w_lvol = trial.suggest_float("w_lowvol", 0.05, 0.25)
         fw = _normalize_weights(w_mom, w_qual, w_val, w_size, w_lvol)
 
-        result = backtest_with_params(prices, fund, top_n, mom_lb, vol_lb, sec_neutral, fw)
+        # Trend filter conditional parameters
+        tf_enable = False
+        tf_ma, tf_mode = 200, "soft"
+        if include_trend_filter:
+            tf_enable = trial.suggest_categorical("tf_enable", [True, False])
+            if tf_enable:
+                tf_ma = trial.suggest_int("tf_ma_period", 50, 250, step=25)
+                tf_mode = trial.suggest_categorical("tf_mode", ["hard", "soft"])
+
+        result = backtest_with_params(
+            prices, fund, top_n, mom_lb, vol_lb, sec_neutral, fw,
+            cost_config=cost_config,
+            tf_enable=tf_enable, tf_ma_period=tf_ma, tf_mode=tf_mode,
+            quarterly_cache=quarterly_cache)
         if result is None:
             return -999.0
 

@@ -6,10 +6,11 @@ import pandas as pd
 import streamlit as st
 
 from backtest import BacktestEngine
-from data import load_earnings, load_fundamentals, load_prices
+from data import load_earnings, load_fundamentals, load_prices, load_quarterly_cache, get_pit_fundamentals
 from factors import compute_composite, compute_gap_events, compute_quality, compute_sue, compute_value
 from portfolio import build_event_portfolio, build_multifactor_portfolio
 from risk import RiskEngine
+from transaction_cost import CostConfig
 from trend_filter import TrendFilterConfig
 
 UNIVERSE_TICKERS = [
@@ -37,17 +38,24 @@ def get_fundamentals():
 def get_earnings():
     return load_earnings(UNIVERSE_TICKERS)
 
+@st.cache_data(show_spinner="분기 재무 데이터 로딩 중...")
+def get_quarterly():
+    return load_quarterly_cache(UNIVERSE_TICKERS)
+
 
 def _to_dict(r):
     return {"equity": r.equity_curve, "drawdown": r.drawdown, "benchmark": r.benchmark_curve,
             "cagr": r.cagr, "sharpe": r.sharpe, "max_drawdown": r.max_drawdown,
-            "calmar": r.calmar, "total_return": r.total_return, "monthly": r.monthly_returns}
+            "calmar": r.calmar, "total_return": r.total_return, "monthly": r.monthly_returns,
+            "annual_turnover": r.annual_turnover, "total_cost": r.total_cost,
+            "cost_drag": r.cost_drag}
 
 
 @st.cache_data(show_spinner="백테스트 실행 중...")
 def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, max_hold,
-                 fw=None):
-    prices, fund = get_prices(start, end), get_fundamentals()
+                 fw=None, comm_pct=0.00005, slip_pct=0.0005):
+    prices = get_prices(start, end)
+    qcache = get_quarterly()
     for f in ("adj_close", "close"):
         try:
             close = prices.xs(f, level="field", axis=1); break
@@ -62,7 +70,8 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
         if len(h) < mom_lb + 5: continue
         vt = h.columns.tolist()
         sp = prices.loc[:d, [c for c in prices.columns if c[0] in vt]]
-        sf = fund.loc[fund.index.isin(vt)]
+        sf = get_pit_fundamentals(qcache, uni.loc[:d].iloc[-1], d)
+        sf = sf.loc[sf.index.isin(vt)] if not sf.empty else sf
         fweights = fw or {"momentum": 0.3, "quality": 0.25, "value": 0.2, "size": 0.1, "lowvol": 0.15}
         sc = compute_composite(sp, sf, momentum_lookback=mom_lb, lowvol_lookback=vol_lb,
                                sector_neutral=sec_neutral, weights=fweights)
@@ -72,7 +81,8 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
 
     mf_wh = pd.DataFrame([w for _, w in rows], index=[d for d, _ in rows]).fillna(0)
     mf_wh = mf_wh.reindex(uni.index, method="ffill").fillna(0)
-    engine = BacktestEngine(prices, commission_bps=1, slippage_bps=30)
+    cc = CostConfig(commission_pct=comm_pct, slippage_pct=slip_pct)
+    engine = BacktestEngine(prices, cost_config=cc)
     out = {"mf": _to_dict(engine.run(mf_wh)), "weights": rows[-1][1]}
 
     if ev_on:
@@ -80,8 +90,10 @@ def run_backtest(start, end, top_n, mom_lb, vol_lb, sec_neutral, ev_on, sue_th, 
         gaps = compute_gap_events(prices)
         sue = pd.concat([sue, gaps], ignore_index=True).drop_duplicates(
             subset=["ticker", "date"], keep="first")
-        q = compute_quality(fund) if not fund.empty else None
-        v = compute_value(fund) if not fund.empty else None
+        # PEAD loose filter: 최신 PIT 펀더멘탈 사용
+        latest_fund = get_pit_fundamentals(qcache, uni.iloc[-1], pd.Timestamp(end))
+        q = compute_quality(latest_fund) if not latest_fund.empty else None
+        v = compute_value(latest_fund) if not latest_fund.empty else None
         ev_w = build_event_portfolio(sue, prices, q, v, sue_threshold=sue_th, max_holding_days=max_hold)
         out["event"] = _to_dict(engine.run(ev_w.reindex(uni.index, method="ffill").fillna(0)))
         cols = sorted(set(mf_wh.columns) | set(ev_w.columns))
@@ -152,6 +164,19 @@ def main():
         tf_mode = st.radio("Mode", ["soft", "hard"], horizontal=True) if tf_on else "soft"
         tf_bench = st.selectbox("Benchmark", ["SPY", "QQQ", "IWM"]) if tf_on else "SPY"
         st.divider()
+        st.header("Transaction Cost")
+        cost_preset = st.checkbox("Realistic Cost (IBKR)", True)
+        if cost_preset:
+            comm_pct = 0.00005
+            slip_pct = 0.0005
+            st.caption("Commission 0.005% + Slippage 0.05%")
+        else:
+            comm_pct = st.slider("Commission (%)", 0.0, 0.01, 0.00005, 0.00001,
+                                 format="%.5f%%", key="comm")
+            slip_pct = st.slider("Slippage (%)", 0.0, 0.05, 0.0005, 0.0001,
+                                 format="%.4f%%", key="slip")
+        cost_cfg = CostConfig(commission_pct=comm_pct, slippage_pct=slip_pct)
+        st.divider()
         st.header("PEAD")
         ev_on = st.checkbox("Enable Hybrid 60/40", False)
         sue_th = st.slider("SUE Threshold", 0.3, 3.0, 1.0, 0.1) if ev_on else 1.0
@@ -171,7 +196,7 @@ def main():
         from app_backtest import render_backtest
         render_backtest(run, start, end, top_n, mom_lb, vol_lb, sec_n,
                         ev_on, sue_th, max_hold, w_mom, w_qual, w_val, w_size, w_lvol,
-                        tf_cfg, run_backtest, get_prices)
+                        tf_cfg, run_backtest, get_prices, cost_cfg)
 
 if __name__ == "__main__":
     main()

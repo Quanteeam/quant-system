@@ -34,8 +34,12 @@ def run_walk_forward(
     test_years: int = 1,
     n_trials: int = 30,
     metric: str = "sharpe",
+    on_progress=None,
 ) -> list[WFOWindow]:
-    """Walk-forward: train N년 → test 1년, 1년 단위 롤링."""
+    """Walk-forward: train N년 → test 1년, 1년 단위 롤링.
+
+    on_progress(window_idx, total_windows, trial_idx, n_trials, best_value)
+    """
     prices = load_prices(ALL_TICKERS, full_start, full_end)
     fund = load_fundamentals(UNIVERSE_TICKERS)
 
@@ -43,8 +47,12 @@ def run_walk_forward(
     end_year = int(full_end[:4])
     results: list[WFOWindow] = []
 
+    # 전체 윈도우 수 미리 계산
+    all_years = list(range(start_year, end_year - train_years - test_years + 2))
+    total_windows = len(all_years)
+
     win = 0
-    for y in range(start_year, end_year - train_years - test_years + 2):
+    for y in all_years:
         train_s = f"{y}-01-01"
         train_e = f"{y + train_years - 1}-12-31"
         test_s = f"{y + train_years}-01-01"
@@ -59,7 +67,14 @@ def run_walk_forward(
         # IS 최적화
         study = optuna.create_study(direction="maximize", study_name=f"wfo_w{win}",
                                     storage=None)
-        study.optimize(create_objective(train_prices, fund, metric), n_trials=n_trials)
+
+        def _wfo_callback(study, trial, _w=win, _tw=total_windows):
+            if on_progress:
+                best_v = study.best_value if study.best_trial else None
+                on_progress(_w, _tw, trial.number + 1, n_trials, best_v)
+
+        study.optimize(create_objective(train_prices, fund, metric),
+                       n_trials=n_trials, callbacks=[_wfo_callback])
         bp = study.best_params
 
         # IS 성과

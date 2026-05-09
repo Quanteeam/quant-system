@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import time
 from pathlib import Path
 
@@ -122,6 +123,155 @@ def load_fundamentals(tickers: list[str]) -> pd.DataFrame:
     numeric_cols = [c for c in df.columns if c != "sector"]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     df.to_parquet(path)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# PIT (Point-in-Time) Fundamentals
+# ---------------------------------------------------------------------------
+
+def _merge_financials(quarterly: pd.DataFrame | None,
+                       annual: pd.DataFrame | None) -> pd.DataFrame:
+    """분기 + 연간 재무제표 병합. 분기 우선, 연간으로 과거 보충."""
+    frames = []
+    if quarterly is not None and not quarterly.empty:
+        frames.append(quarterly)
+    if annual is not None and not annual.empty:
+        # 분기 데이터에 이미 있는 날짜는 제외
+        existing = set(quarterly.columns) if quarterly is not None and not quarterly.empty else set()
+        annual_new = annual[[c for c in annual.columns if c not in existing]]
+        if not annual_new.empty:
+            frames.append(annual_new)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, axis=1).sort_index(axis=1)
+
+
+def load_quarterly_cache(tickers: list[str]) -> dict:
+    """분기+연간 재무제표 다운로드 + 캐시 (pickle, 24h TTL).
+
+    Returns: {ticker: {income, balance, cashflow, sector}}
+    연간 데이터로 과거(~2021)까지 커버, 분기 데이터로 최근 정밀도 확보.
+    """
+    h = hashlib.md5(json.dumps(sorted(tickers)).encode()).hexdigest()
+    path = CACHE_DIR / f"quarterly_v2_{h}.pkl"
+
+    if path.exists() and (time.time() - path.stat().st_mtime) < _FUND_CACHE_TTL:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    for ticker in tickers:
+        try:
+            t = yf.Ticker(ticker)
+            qi = t.quarterly_income_stmt
+            ai = t.income_stmt
+            qb = t.quarterly_balance_sheet
+            ab = t.balance_sheet
+            qc = t.quarterly_cashflow
+            ac = t.cashflow
+            sector = t.info.get("sector", "Unknown")
+
+            inc = _merge_financials(qi, ai)
+            bs = _merge_financials(qb, ab)
+            cf = _merge_financials(qc, ac)
+
+            if not inc.empty:
+                data[ticker] = {"income": inc, "balance": bs, "cashflow": cf,
+                                "sector": sector}
+        except Exception:
+            continue
+
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+    return data
+
+
+def _safe_get(df: pd.DataFrame, keys: list[str], col) -> float | None:
+    """재무제표에서 여러 가능한 행 이름으로 값 추출."""
+    if df is None or df.empty or col not in df.columns:
+        return None
+    for key in keys:
+        if key in df.index:
+            val = df.loc[key, col]
+            if pd.notna(val):
+                return float(val)
+    return None
+
+
+def get_pit_fundamentals(
+    quarterly_cache: dict,
+    close_at_date: pd.Series,
+    as_of_date: pd.Timestamp,
+    lag_days: int = 90,
+) -> pd.DataFrame:
+    """as_of_date 기준 PIT 펀더멘탈 재구성.
+
+    lag_days: 분기 종료 후 데이터 공시까지 lag (보수적 90일).
+    close_at_date: ticker → 리밸런스일 종가.
+    """
+    cutoff = pd.Timestamp(as_of_date) - pd.Timedelta(days=lag_days)
+
+    rows: dict[str, dict] = {}
+    for ticker, qd in quarterly_cache.items():
+        inc, bs, cf = qd["income"], qd["balance"], qd["cashflow"]
+
+        avail = [c for c in inc.columns if pd.Timestamp(c) <= cutoff]
+        if not avail:
+            continue
+        latest = max(avail, key=lambda x: pd.Timestamp(x))
+
+        price = close_at_date.get(ticker)
+        if price is None or pd.isna(price) or price <= 0:
+            continue
+
+        # 재무 항목 추출
+        revenue = _safe_get(inc, ["Total Revenue", "Revenue"], latest)
+        gross_profit = _safe_get(inc, ["Gross Profit"], latest)
+        net_income = _safe_get(inc, ["Net Income", "Net Income Common Stockholders"], latest)
+        equity = _safe_get(bs, ["Stockholders Equity", "Total Stockholder Equity",
+                                "Stockholders' Equity", "Common Stock Equity"], latest)
+        total_debt = _safe_get(bs, ["Total Debt", "Long Term Debt"], latest)
+        fcf_val = _safe_get(cf, ["Free Cash Flow"], latest)
+        shares = _safe_get(bs, ["Ordinary Shares Number", "Share Issued"], latest)
+        ebitda = _safe_get(inc, ["EBITDA", "Normalized EBITDA"], latest)
+
+        # Trailing 4Q net income (PE 계산용)
+        avail_sorted = sorted([c for c in inc.columns if pd.Timestamp(c) <= cutoff],
+                              key=lambda x: pd.Timestamp(x), reverse=True)[:4]
+        trailing_ni = 0.0
+        for q in avail_sorted:
+            ni = _safe_get(inc, ["Net Income", "Net Income Common Stockholders"], q)
+            if ni is not None:
+                trailing_ni += ni
+
+        # 비율 계산
+        mc = price * shares if shares and shares > 0 else None
+
+        pe = (mc / trailing_ni) if mc and trailing_ni and trailing_ni > 0 else None
+        pb = (mc / equity) if mc and equity and equity > 0 else None
+        roe = (net_income * 4 / equity) if net_income and equity and equity > 0 else None
+        gm = (gross_profit / revenue) if gross_profit and revenue and revenue > 0 else None
+        de = (total_debt / equity) if total_debt is not None and equity and equity > 0 else None
+        ev_ebitda_val = None
+        if mc and ebitda and ebitda > 0:
+            ev = mc + (total_debt or 0)
+            ev_ebitda_val = ev / (ebitda * 4)
+        fcf_y = (fcf_val * 4 / mc) if fcf_val and mc and mc > 0 else None
+
+        rows[ticker] = {
+            "market_cap": mc, "pe_ratio": pe, "pb_ratio": pb,
+            "ev_ebitda": ev_ebitda_val, "fcf_yield": fcf_y,
+            "roe": roe, "gross_margin": gm, "debt_equity": de,
+            "sector": qd["sector"],
+        }
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).T
+    numeric_cols = [c for c in df.columns if c != "sector"]
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     return df
 
 

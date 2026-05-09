@@ -27,7 +27,10 @@ def cmd_backtest() -> None:
     scores = compute_momentum(prices)
     weights = build_multifactor_portfolio(scores, top_n=cfg.portfolio.mf_num_stocks)
 
-    close = prices.xs("close", level="field", axis=1, errors="ignore")
+    try:
+        close = prices.xs("adj_close", level="field", axis=1)
+    except KeyError:
+        close = prices.xs("close", level="field", axis=1)
     weights_df = pd.DataFrame([weights], index=[close.index[-1]])
     weights_df = weights_df.reindex(close.index, method="ffill").fillna(0)
 

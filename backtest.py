@@ -22,6 +22,9 @@ class BacktestResult:
     calmar: float
     monthly_returns: pd.Series
     benchmark_curve: pd.Series
+    annual_turnover: float = 0.0
+    total_cost: float = 0.0
+    cost_drag: float = 0.0
 
 
 def _get_close(prices: pd.DataFrame) -> pd.DataFrame:
@@ -61,17 +64,22 @@ class BacktestEngine:
         initial_capital: float = 100_000,
         commission_bps: float = 1.0,
         slippage_bps: float = 30.0,
+        cost_config=None,
     ):
         """
         Args:
             prices: MultiIndex columns (ticker, field).
             initial_capital: 초기 자본금.
-            commission_bps: 편도 수수료 (bps). ~$0.005/share ≈ 1bps.
-            slippage_bps: 편도 슬리피지 (bps). Small-cap 보수적 30bps.
+            commission_bps: 편도 수수료 (bps). cost_config 없을 때 사용.
+            slippage_bps: 편도 슬리피지 (bps). cost_config 없을 때 사용.
+            cost_config: CostConfig 인스턴스. 있으면 bps 파라미터 무시.
         """
         self.prices = prices
         self.initial_capital = initial_capital
-        self.cost_rate = (commission_bps + slippage_bps) / 10_000
+        if cost_config is not None:
+            self.cost_rate = cost_config.one_way_cost
+        else:
+            self.cost_rate = (commission_bps + slippage_bps) / 10_000
 
     def run(self, weights_history: pd.DataFrame) -> BacktestResult:
         """weights_history: index=date, columns=tickers, values=target weight.
@@ -107,6 +115,19 @@ class BacktestEngine:
         max_dd = float(dd.min())
         monthly = equity.resample("ME").last().pct_change().dropna()
 
+        # 비용 메트릭
+        total_turnover = float(turnover.sum())
+        years = len(equity) / 252
+        annual_turnover = total_turnover / years if years > 0 else 0.0
+        total_cost_abs = float(turnover.sum() * self.cost_rate * self.initial_capital)
+
+        # Cost drag: 비용 없는 CAGR과 비교
+        port_ret_nocost = (w_prev * daily_ret).sum(axis=1)
+        port_ret_nocost.iloc[0] = 0.0
+        equity_nocost = (1 + port_ret_nocost).cumprod() * self.initial_capital
+        cagr_nocost = _cagr(equity_nocost)
+        cost_drag = cagr_nocost - cagr_val
+
         return BacktestResult(
             equity_curve=equity,
             drawdown=dd,
@@ -117,6 +138,9 @@ class BacktestEngine:
             calmar=_calmar(cagr_val, max_dd),
             monthly_returns=monthly,
             benchmark_curve=bench_curve,
+            annual_turnover=annual_turnover,
+            total_cost=total_cost_abs,
+            cost_drag=cost_drag,
         )
 
 

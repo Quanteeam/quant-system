@@ -33,7 +33,8 @@ def apply_trend_filter_to_results(res, get_prices_fn, start, end, tf_cfg):
 
     bench_close = close[bench].reindex(eq_orig.index, method="ffill")
     ma = bench_close.rolling(tf_cfg.ma_period, min_periods=tf_cfg.ma_period).mean()
-    above = bench_close >= ma
+    # T일 종가 신호 → T+1일 적용 (look-ahead 방지)
+    above = (bench_close >= ma).shift(1)
 
     if tf_cfg.mode == "hard":
         mult = above.astype(float)
@@ -64,14 +65,17 @@ def apply_trend_filter_to_results(res, get_prices_fn, start, end, tf_cfg):
 
 def render_backtest(run, start, end, top_n, mom_lb, vol_lb, sec_n,
                     ev_on, sue_th, max_hold, w_mom, w_qual, w_val, w_size, w_lvol,
-                    tf_cfg, run_backtest_fn, get_prices_fn):
+                    tf_cfg, run_backtest_fn, get_prices_fn, cost_cfg=None):
     if not run:
         st.info("파라미터 설정 후 **Run**을 클릭하세요.")
         return
     fw = {"momentum": w_mom, "quality": w_qual, "value": w_val,
           "size": w_size, "lowvol": w_lvol}
+    cost_kw = {}
+    if cost_cfg is not None:
+        cost_kw = {"comm_pct": cost_cfg.commission_pct, "slip_pct": cost_cfg.slippage_pct}
     res = run_backtest_fn(start, end, top_n, mom_lb, vol_lb, sec_n,
-                          ev_on, sue_th, max_hold, fw=fw)
+                          ev_on, sue_th, max_hold, fw=fw, **cost_kw)
     if not res:
         st.error("데이터 부족")
         return
@@ -94,6 +98,9 @@ def render_backtest(run, start, end, top_n, mom_lb, vol_lb, sec_n,
         col.metric("Sharpe", _f(r["sharpe"], False))
         col.metric("Max DD", _f(r["max_drawdown"]))
         col.metric("Calmar", _f(r["calmar"], False))
+        if "annual_turnover" in r:
+            col.metric("Turnover/yr", _f(r["annual_turnover"], False))
+            col.metric("Cost Drag", f"{r['cost_drag']*100:.2f}%p")
 
     # Equity curves
     fig = go.Figure()
