@@ -37,6 +37,12 @@ def _chunked(values: list[str], size: int) -> list[list[str]]:
     return [values[i : i + size] for i in range(0, len(values), size)]
 
 
+def _numeric_series(frame: pd.DataFrame, col: str) -> pd.Series:
+    if col not in frame.columns:
+        return pd.Series(index=frame.index, dtype=float)
+    return pd.to_numeric(frame[col], errors="coerce")
+
+
 def load_ticker_metadata(data_dir: str | None = None) -> pd.DataFrame:
     base = _resolve_data_dir(data_dir)
     meta = pd.read_parquet(base / "tickers.parquet")
@@ -160,20 +166,18 @@ def get_pit_fundamentals(
         return pd.DataFrame()
 
     latest = eligible.groupby("ticker", as_index=False).tail(1).set_index("ticker")
-    market_cap = pd.to_numeric(latest.get("marketcap"), errors="coerce")
-    fcf = pd.to_numeric(latest.get("fcf"), errors="coerce")
+    market_cap = _numeric_series(latest, "marketcap")
+    fcf = _numeric_series(latest, "fcf")
 
     out = pd.DataFrame(index=latest.index)
     out["market_cap"] = market_cap
-    out["pe_ratio"] = pd.to_numeric(latest.get("pe1"), errors="coerce").combine_first(
-        pd.to_numeric(latest.get("pe"), errors="coerce")
-    )
-    out["pb_ratio"] = pd.to_numeric(latest.get("pb"), errors="coerce")
-    out["ev_ebitda"] = pd.to_numeric(latest.get("evebitda"), errors="coerce")
+    out["pe_ratio"] = _numeric_series(latest, "pe1").combine_first(_numeric_series(latest, "pe"))
+    out["pb_ratio"] = _numeric_series(latest, "pb")
+    out["ev_ebitda"] = _numeric_series(latest, "evebitda")
     out["fcf_yield"] = (fcf * 4 / market_cap).where(market_cap > 0)
-    out["roe"] = pd.to_numeric(latest.get("roe"), errors="coerce")
-    out["gross_margin"] = pd.to_numeric(latest.get("grossmargin"), errors="coerce")
-    out["debt_equity"] = pd.to_numeric(latest.get("de"), errors="coerce")
+    out["roe"] = _numeric_series(latest, "roe")
+    out["gross_margin"] = _numeric_series(latest, "grossmargin")
+    out["debt_equity"] = _numeric_series(latest, "de")
 
     sector_map = quarterly_cache.get("sector_map", pd.Series(dtype=object))
     out["sector"] = sector_map.reindex(out.index).astype("object").fillna("Unknown")
