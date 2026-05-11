@@ -1,19 +1,18 @@
 # Quant System
 
 NASDAQ small/mid-cap 대상 systematic equity trading 시스템.
-Multi-factor + Event-driven (PEAD) 하이브리드 구조 (40/60 split).
+Multi-factor + Event-driven (PEAD) 하이브리드 구조를 목표로 한다.
 
 ## 설치
 
-### Poetry (권장)
-```bash
-poetry install
-```
-
 ### pip
 ```bash
-pip install pandas numpy yfinance streamlit plotly python-dateutil pyarrow
-pip install pytest ruff black  # dev
+pip install -r requirements.txt
+```
+
+### Poetry
+```bash
+poetry install
 ```
 
 ## 실행
@@ -35,34 +34,64 @@ python main.py backtest
 pytest
 ```
 
-### config 확인
+### Config 확인
 ```bash
-python -c "from config import DEFAULT_CONFIG; print(DEFAULT_CONFIG.pead.sue_threshold)"
+python -c "from config import DEFAULT_CONFIG; print(DEFAULT_CONFIG.data.backend)"
 ```
 
-## 디렉토리
+## 데이터 Backend
 
-| 파일 | 설명 |
+기본값은 `yfinance`다. 팀 공유 로컬 데이터나 Sharadar API를 쓸 때는 repo root에 `.env.local`을 만들고 개인 환경값만 넣는다. `.env.local`은 git에 올리지 않는다.
+
+### 로컬 전처리 데이터
+```env
+QUANT_DATA_BACKEND=local
+NASDAQ_DATA_DIR=C:\path\to\nasdaq_data\processed
+```
+
+`NASDAQ_DATA_DIR`에는 로컬 preprocess 폴더 경로를 넣는다.
+
+### Sharadar API
+```env
+QUANT_DATA_BACKEND=sharadar
+NASDAQ_DATA_LINK_API_KEY=your_api_key
+```
+
+`QUANDL_API_KEY`도 대체 키 이름으로 지원한다.
+
+## 디렉토리 구조
+
+| 경로 | 설명 |
 |---|---|
-| `config.py` | 전체 시스템 파라미터 (수정 금지) |
-| `data.py` | yfinance 데이터 로딩 + 캐싱 |
-| `factors.py` | 팩터 계산 (Phase 1: momentum) |
-| `portfolio.py` | 포트폴리오 구성 (multi-factor / event sleeve) |
-| `backtest.py` | 백테스트 엔진 + metrics |
-| `app.py` | Streamlit UI |
-| `main.py` | CLI 진입점 |
+| `core/` | 공통 설정, universe 구성 |
+| `data_layer/` | yfinance, local parquet, Polygon, Sharadar 데이터 backend |
+| `backtesting/` | 공통 백테스트 엔진, 거래비용, trend filter |
+| `strategies/` | 전략별 구현과 registry |
+| `strategies/multifactor/` | 4/5-factor multi-factor 전략 |
+| `trading/` | 실행 엔진, risk 엔진 |
+| `research/` | 분석, 최적화, robustness, walk-forward |
+| `ui/` | Streamlit tab별 UI |
 | `tests/` | pytest 단위 테스트 |
 
-## Phase 진행
+기존 루트 파일(`data.py`, `backtest.py`, `factors.py`, `portfolio.py` 등)은 호환용 wrapper로 유지한다. 새 코드는 가능하면 패키지 경로를 직접 import한다.
 
-- [x] Phase 1 — 셋업 + UI skeleton + momentum 백테스트
-- [ ] Phase 2 — 5팩터 실제 계산 (Size, Value, Quality, Low Vol)
-- [ ] Phase 3 — Multi-factor sleeve 백테스트 검증
-- [ ] Phase 4 — PEAD signal + event sleeve
-- [ ] Phase 5 — 60/40 통합 + Risk Engine
-- [ ] Phase 6 — Polygon + Sharadar 마이그레이션
-- [ ] Phase 7 — IBKR paper trading
+## 전략 추가 규칙
 
-## 다음: Phase 2 — 5팩터 실제 계산
+새 전략은 `strategies/{strategy_name}/` 폴더로 만든다.
 
-`factors.py`에서 `compute_size`, `compute_value`, `compute_quality`, `compute_lowvol` 구현.
+1. 전략별 로직은 해당 전략 폴더 안에서만 수정한다.
+2. 공통 백테스트 로직은 `backtesting/`에서 수정한다.
+3. UI나 백테스트에서 선택하려면 `strategies/registry.py`에 등록한다.
+4. 새 패키지를 쓰면 `requirements.txt`에 추가한다.
+5. 로컬 경로나 개인 PC 의존성은 `requirements.txt`에 넣지 않는다.
+
+## 현재 상태
+
+- 폴더 구조 정리 완료: `core`, `data_layer`, `backtesting`, `strategies`, `trading`, `research`, `ui`
+- 기존 루트 파일은 호환용 wrapper로 유지
+- multi-factor 전략은 `strategies/multifactor`로 분리
+- 전략 registry 추가
+- `requirements.txt` 추가
+- SPY/QQQ benchmark 비교 지원
+- local parquet backend 및 Sharadar backend 지원
+- 파이프라인 테스트 통과: `pytest`
