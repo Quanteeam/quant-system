@@ -14,6 +14,15 @@ if DEFAULT_CONFIG.data.backend == "local":
         load_quarterly_cache,
         load_ticker_metadata,
     )
+elif DEFAULT_CONFIG.data.backend == "sharadar":
+    from data_layer.sharadar import (
+        get_pit_fundamentals,
+        load_earnings,
+        load_fundamentals,
+        load_prices,
+        load_quarterly_cache,
+        load_ticker_metadata,
+    )
 else:
     from data_layer.yfinance_provider import (
         get_pit_fundamentals,
