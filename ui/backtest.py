@@ -24,9 +24,6 @@ def render_backtest(
     mom_lb,
     vol_lb,
     sec_n,
-    ev_on,
-    sue_th,
-    max_hold,
     w_mom,
     w_qual,
     w_val,
@@ -63,9 +60,6 @@ def render_backtest(
         mom_lb,
         vol_lb,
         sec_n,
-        ev_on,
-        sue_th,
-        max_hold,
         fw=factor_weights,
         dynamic_universe=dynamic_universe,
         exchange_scope=exchange_scope,
@@ -96,10 +90,6 @@ def render_backtest(
     )
 
     baselines = {"Multi-factor": res["mf"]}
-    if "event" in res:
-        baselines["PEAD Only"] = res["event"]
-    if "hybrid" in res:
-        baselines["Hybrid 40/60"] = res["hybrid"]
     if "mf_nofilter" in res:
         baselines["MF (No Filter)"] = res["mf_nofilter"]
 
@@ -119,13 +109,11 @@ def render_backtest(
         avg_changes = float(monthly_changes.mean()) if not monthly_changes.empty else 0.0
         col.metric("Avg Monthly Changes", _fmt_num(avg_changes))
 
-    active = res.get("hybrid", res["mf"])
+    active = res["mf"]
 
     equity_fig = go.Figure()
     strategy_colors = {
         "Multi-factor": "#22c55e",
-        "PEAD Only": "#3b82f6",
-        "Hybrid 40/60": "#f59e0b",
         "MF (No Filter)": "#94a3b8",
     }
     for name, result in baselines.items():
@@ -224,13 +212,6 @@ def render_backtest(
                 uni_fig.add_trace(go.Scatter(x=universe_history.index, y=universe_history[col], name=col.title(), line=dict(color=color)))
         uni_fig.update_layout(title="Universe Size Over Time", template="plotly_dark")
         st.plotly_chart(uni_fig, use_container_width=True)
-
-    if "risk_events" in res and res["risk_events"]:
-        st.subheader("Risk Events")
-        risk_df = pd.DataFrame(
-            [{"Date": e.date, "Type": e.event_type, "Detail": e.detail} for e in res["risk_events"]]
-        )
-        st.dataframe(risk_df, use_container_width=True, hide_index=True)
 
     st.subheader("Latest Portfolio Weights")
     weights_df = res["weights"].reset_index()

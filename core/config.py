@@ -60,31 +60,16 @@ class FactorConfig:
 
 
 @dataclass
-class PEADConfig:
-    sue_threshold: float = 1.5
-    entry_delay_days: int = 1
-    max_holding_days: int = 45
-    pre_next_earnings_exit_days: int = 3
-    stop_loss: float = -0.10
-    quality_min_percentile: float = 0.50
-    value_min_percentile: float = 0.50
-
-
-@dataclass
 class PortfolioConfig:
-    multifactor_allocation: float = 0.40
-    event_allocation: float = 0.60
+    multifactor_allocation: float = 1.0
     mf_num_stocks: int = 20
     mf_rebalance_freq: Literal["monthly", "quarterly"] = "monthly"
     mf_weighting: Literal["equal", "inverse_vol"] = "equal"
-    event_max_stocks: int = 40
-    event_position_size: float = 0.015
     portfolio_vol_target: float = 0.15
 
     def __post_init__(self):
-        total = self.multifactor_allocation + self.event_allocation
-        if abs(total - 1.0) > 1e-6:
-            raise ValueError(f"Allocations must sum to 1.0, got {total}")
+        if not 0.0 <= self.multifactor_allocation <= 1.0:
+            raise ValueError("Multi-factor allocation must be between 0.0 and 1.0")
 
 
 @dataclass
@@ -99,8 +84,8 @@ class RiskConfig:
 
 @dataclass
 class ExecutionConfig:
-    broker: str = "IBKR"
-    algo: str = "Adaptive"
+    broker: str = "disabled"
+    algo: str = "none"
     allow_market_orders: bool = False
     use_paper: bool = True
 
@@ -134,7 +119,6 @@ class DataConfig:
 class Config:
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     factors: FactorConfig = field(default_factory=FactorConfig)
-    pead: PEADConfig = field(default_factory=PEADConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -148,8 +132,6 @@ DEFAULT_CONFIG = Config()
 if __name__ == "__main__":
     cfg = DEFAULT_CONFIG
     print(f"Multi-factor allocation: {cfg.portfolio.multifactor_allocation}")
-    print(f"Event allocation:        {cfg.portfolio.event_allocation}")
-    print(f"SUE threshold:           {cfg.pead.sue_threshold}")
     print(f"Backtest period:         {cfg.backtest.start_date} ~ {cfg.backtest.end_date}")
     print(f"Data backend:            {cfg.data.backend}")
     print(f"Local data dir:          {cfg.data.local_data_dir}")

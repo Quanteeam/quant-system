@@ -1,268 +1,128 @@
-# Quant Trading System
+# Quant System - Multi-Factor Only
 
-NASDAQ small/mid-cap 대상 systematic equity trading 시스템.
-Multi-factor + Event-driven (PEAD) 하이브리드 구조.
+This repository is currently a local Sharadar data based multi-factor backtesting system.
+Keep the active product scope narrow: monthly multi-factor equity selection, research, and Streamlit/CLI backtests.
 
----
+## Current Scope
 
-## 시스템 개요 (선택지 B: 40/60 hybrid)
+- Strategy: multi-factor only.
+- Data: local Sharadar parquet bundle by default.
+- Benchmarks: SPY and QQQ must come from the local data bundle.
+- UI tabs: Backtest, Optimize, Robustness.
+- Execution: research/backtest only. No live broker execution in the current scope.
 
-자본을 두 sleeve로 분리:
+## Out Of Scope Unless Explicitly Requested
 
-- **Multi-factor sleeve (40%)** — 5팩터 동등가중, 20종목, monthly rebalance
-- **Event-driven sleeve (60%)** — PEAD 트리거 + multi-factor loose filter, max 40종목
+Do not add or revive these features without a fresh user request:
 
-목표: S&P 500 대비 연 +2~5% 알파 (net of costs), max drawdown < -20%, Sharpe > 0.6.
+- PEAD event sleeve.
+- Hybrid 40/60 or 60/40 allocation.
+- Earnings surprise controls in the UI.
+- IBKR live trading, broker order routing, kill switch, or paper trading flows.
+- Polygon migration.
+- yfinance fallback.
 
----
+Some legacy compatibility code may still exist. Treat it as dormant unless the user asks for cleanup.
 
-## 디렉토리 구조
+## Directory Map
 
-```
+```text
 quant-system/
-├── CLAUDE.md           # 이 파일
-├── WORKFLOW.md         # 사용자용 진행 가이드
-├── README.md           # Phase 1에 생성
-├── pyproject.toml
-├── config.py           # 모든 파라미터 (dataclass)
-├── data.py             # 데이터 backend 호환 wrapper
-├── factors.py          # 5팩터 + SUE 계산
-├── portfolio.py        # 60/40 sleeve construction
-├── backtest.py         # 백테스트 엔진 + metrics
-├── risk.py             # Risk engine (Phase 5)
-├── app.py              # Streamlit UI
-├── main.py             # CLI 진입점
-└── tests/              # pytest
+├── core/                 # shared config and universe construction
+├── data_layer/           # local parquet and Sharadar data backends
+├── backtesting/          # common backtest engine, costs, trend filter
+├── strategies/           # strategy registry and strategy implementations
+├── strategies/multifactor/
+│   ├── factors.py        # factor calculations
+│   ├── portfolio.py      # multi-factor portfolio construction
+│   └── strategy.py       # strategy adapter
+├── research/             # optimization, robustness, walk-forward helpers
+├── trading/              # legacy/inactive execution-related modules
+├── ui/                   # Streamlit tab renderers
+├── tests/                # pytest tests
+├── preprocess.py         # raw Sharadar ZIP to local parquet bundle
+├── app.py                # Streamlit entrypoint
+└── main.py               # CLI entrypoint
 ```
 
----
+Root files such as `data.py`, `backtest.py`, `factors.py`, and `portfolio.py` are compatibility wrappers. Prefer package paths for new code.
 
-## 코드 스타일
+## Data Configuration
 
-- Python 3.11+
-- 타입 힌트 필수 (`from __future__ import annotations`)
-- `dataclass` 또는 `pydantic`으로 데이터 구조 명시
-- 함수 docstring 필수
-- 의존성 관리: `pyproject.toml` (poetry 선호)
-- 포매터: black, isort
-- 린터: ruff
+Local data is the default path.
 
----
+```env
+QUANT_DATA_BACKEND=local
+NASDAQ_DATA_DIR=C:\Users\womin\quant_data
+```
 
-## 모델 사용 정책 (Opus vs Sonnet)
+Optional direct Sharadar API access may use:
 
-비용 효율을 위해 작업 성격에 따라 모델 분리. **기준: 이 코드가 틀리면 돈을 잃는가?**
+```env
+QUANT_DATA_BACKEND=sharadar
+NASDAQ_DATA_LINK_API_KEY=your_key
+```
 
-### Opus 사용 영역 (정확성 critical)
+Do not use `yfinance`. Do not add personal local paths or API keys to tracked files.
 
-- `factors.py` 본 구현 — look-ahead bias, sector neutral z-score, SUE 계산
-- `backtest.py` 엔진 — fill timing, walk-forward, Sharpe/drawdown 계산식
-- `risk.py` 전체 — pre-trade check, drawdown halt, kill switch
-- `portfolio.py` 의 `combine_sleeves()`, position sizing, vol target
-- `data.py` 의 corporate action 처리 (split, dividend, delisting)
-- PEAD signal 로직 — earnings date alignment, D+1 진입, 청산 우선순위
-- Live execution 코드 (Phase 7) — broker state 동기화
+## Preprocessing Contract
 
-### Sonnet 사용 영역 (검증 쉬움 / 표준 패턴)
+`preprocess.py` reads raw Sharadar ZIP exports and writes:
 
-- `app.py` Streamlit UI 전체
-- `data_layer/` backend 연결, 로컬 데이터 로딩, 캐싱/에러 처리
-- `main.py` CLI 진입점
-- `tests/` 단위 테스트 작성 (테스트 케이스 설계는 Opus)
-- `pyproject.toml`, `README.md` 보일러플레이트
-- `factors.py` NotImplementedError stub
-- Plotly chart 디테일
+- `tickers.parquet`
+- `sep/ticker=<TICKER>/data.parquet`
+- `sf1.parquet`
 
-### 디버깅 모델 선택
+SPY and QQQ are read from SFP and written into the same `sep/` layout as price data. If their data starts later than the requested backtest window, warn the user instead of silently inventing data.
 
-- Syntax/import 에러 → Sonnet
-- 백테스트 결과 이상함, 알파 의심 → Opus
-- UI 깨짐 → Sonnet
-- Live trading 동작 이상 → Opus
+## Strategy Rules
 
-### Phase별 모델 비중
+- New strategy code goes under `strategies/{strategy_name}/`.
+- Register selectable strategies in `strategies/registry.py`.
+- Shared backtest mechanics belong in `backtesting/`.
+- Multi-factor-specific scoring and portfolio logic stays in `strategies/multifactor/`.
+- Add new third-party packages to `requirements.txt`.
 
-| Phase | Opus | Sonnet |
-|---|---|---|
-| 1 (셋업, UI skeleton) | 10% | 90% |
-| 2 (5팩터 계산) | 70% | 30% |
-| 3 (multi-factor 백테스트) | 60% | 40% |
-| 4 (PEAD + event sleeve) | 80% | 20% |
-| 5 (risk engine) | 90% | 10% |
-| 6 (Polygon 마이그레이션) | 50% | 50% |
-| 7 (IBKR live) | 80% | 20% |
+## Active Multi-Factor Behavior
 
----
+- Monthly rebalance.
+- Equal-weight selected portfolio.
+- Default universe filtering uses price, ADV, exchange scope, and metadata.
+- Factors: momentum, quality, value, size, and low volatility where data is available.
+- Factor weights must sum to 1.0 in the UI.
+- Benchmarks are comparison curves only, not data fallbacks.
 
-## 의존성
+## Verification
 
-핵심: `pandas`, `numpy`, `pyarrow`, `streamlit`, `plotly`
-데이터: 로컬 Sharadar parquet bundle 또는 Nasdaq Data Link Sharadar API
-미래: `ib_async` (Phase 7+, `ib_insync`는 폐기)
+Run focused checks after code changes:
 
----
+```bash
+pytest
+python main.py backtest
+```
 
-## 데이터 소스
+For UI-affecting changes, also run:
 
-| 용도 | 소스 | 설정 |
-|---|---|---|
-| 기본 개발/백테스트 | 로컬 Sharadar parquet bundle | `QUANT_DATA_BACKEND=local`, `NASDAQ_DATA_DIR=...` |
-| API 직접 조회 | Nasdaq Data Link Sharadar | `QUANT_DATA_BACKEND=sharadar`, `NASDAQ_DATA_LINK_API_KEY=...` |
-| PEAD consensus 확장 | Estimize/Zacks 등 | 별도 backend 추가 |
+```bash
+streamlit run app.py
+```
 
-`yfinance`는 사용하지 않는다. SPY/QQQ benchmark도 로컬 데이터 bundle에 포함되어 있어야 한다.
+Success means tests pass, the CLI smoke backtest runs, and the Streamlit UI exposes only multi-factor controls.
 
----
+## Model Guidance For Claude Code
 
-## Universe
+Use Opus for:
 
-- Index: Russell 2000 + Russell Midcap 교집합 (약 1500종목)
-- Min price $5, min 20-day ADV $5M, OTC/ADR 제외
-- Phase 1: S&P 500 종목 중 시총 하위 50개 proxy
+- Factor math and point-in-time data alignment.
+- Backtest fill timing, metrics, and bias checks.
+- Optimization or walk-forward methodology.
 
----
+Use Sonnet for:
 
-## Multi-factor sleeve (40%)
+- UI edits.
+- CLI plumbing.
+- Documentation.
+- Requirements and small test updates.
+- Straightforward local data loading fixes.
 
-| Factor | 정의 | 가중치 |
-|---|---|---|
-| Size | -log(market_cap) | 0.20 |
-| Value | composite z(PER, PBR, EV/EBIT, FCF yield) | 0.20 |
-| Momentum | 12-1 month return | 0.20 |
-| Quality | composite z(ROE, gross margin, low leverage) | 0.20 |
-| Low Vol | -volatility(60d) | 0.20 |
-
-- 5팩터 z-score 평균 → 종목 score
-- Sector neutral ranking, top 20 equal weight, monthly rebalance
-
----
-
-## Event-driven sleeve (60%)
-
-### Trigger: PEAD
-
-- SUE = (Actual EPS - Consensus EPS) / std(historical surprises)
-- **SUE > +1.5** 후보
-
-### Loose filter
-
-- Quality z > sector median
-- Value z > sector median
-- 직전 30일 negative analyst revision 없음
-- 직전 10일 다른 발표 없음
-
-### Entry / Exit
-
-- Entry: 발표 D+1, IBKR Adaptive algo
-- Position: 1.5% per stock, max 40종목
-- Exit (whichever first): D+45 / 다음 실적 D-3 / -10% stop loss
-
-활성 진입 없을 때 cash 또는 SHY.
-
----
-
-## Risk Engine (Phase 5)
-
-### Pre-trade
-
-| 한도 | 값 |
-|---|---|
-| 단일 종목 | 3% |
-| Sector | 30% |
-| ADV % | 5% (초과 시 분할) |
-| Daily VaR 95% | 2% |
-
-### Real-time
-
-| 트리거 | 액션 |
-|---|---|
-| 일일 손실 -3% | 신규 주문 정지 24h |
-| Drawdown -10% | 알람 |
-| Drawdown -15% | Event sleeve 50% 축소 |
-| Drawdown -20% | 전 시스템 halt |
-
-### Sanity
-
-- 전일 대비 ±30% 변동 → reject
-- Stale 데이터 N분+ → 정지
-- NaN/zero/inf 제거
-
-### Kill switch
-
-`python main.py kill` → 전 포지션 청산 + 신규 주문 차단.
-
----
-
-## 백테스트 검증 (4 baseline 필수)
-
-| Baseline | 의미 |
-|---|---|
-| SPY buy & hold | 시장 |
-| Multi-factor 100% | factor sleeve 단독 |
-| PEAD 100% | event sleeve 단독 |
-| 40/60 hybrid | 본 시스템 |
-
-**통과 기준**: hybrid Sharpe > (multi-factor only, PEAD only) 둘 다,
-max DD < PEAD only.
-
-### Walk-forward
-
-- Train 5년 / Test 1년, 2014~2024 6 walks
-- In-sample vs out-of-sample Sharpe 차이 < 30%
-
----
-
-## UI (Streamlit)
-
-### Sidebar
-
-- Date range, Multi-factor allocation slider, SUE threshold slider
-- 5팩터 가중치 슬라이더, PEAD holding period, stop loss
-- "Run backtest" 버튼
-
-### Main
-
-1. Top metric row — CAGR, Sharpe, Max DD, Calmar (4 baseline)
-2. Equity curve (4 baseline)
-3. Drawdown chart (4 baseline)
-4. Monthly returns heatmap
-5. Position breakdown
-6. Trade log
-
-`@st.cache_data` 캐싱 필수.
-
----
-
-## 절대 금지
-
-1. **시장가 주문**: Limit 또는 IBKR Adaptive algo만.
-2. **Look-ahead bias**: t 시점 신호 → t+1 진입.
-3. **Survivorship bias**: 현재 universe로 과거 백테스트 금지.
-4. **Future fundamental**: 발표일 publish 이후만.
-5. **Single-test optimization**: Walk-forward 필수.
-6. **Real broker API in tests**: Mock 사용.
-
----
-
-## Phase 진행
-
-| Phase | 내용 | 검증 |
-|---|---|---|
-| 1 | 셋업 + UI skeleton + mock 백테스트 | `streamlit run app.py` 동작 |
-| 2 | 5팩터 계산 (Sharadar PIT/local) | factor z-score 분포 정상 |
-| 3 | Multi-factor sleeve 백테스트 | Sharpe > SPY |
-| 4 | PEAD signal + event sleeve | 단위 테스트 통과 |
-| 5 | 60/40 통합 + Risk Engine | 4 baseline 비교 |
-| 6 | Polygon + Sharadar 마이그레이션 | PIT 재검증 |
-| 7 | IBKR paper trading | 8주 paper → live Sharpe ≥ 70% backtest |
-
-각 Phase 미달 시 다음 가지 마라.
-
----
-
-## 변경 원칙
-
-- 한 번에 한 모듈씩
-- 변경 사유를 commit message에 명시
-- 함수 시그니처 변경 시 호출자 모두 수정
-- 각 파일 200줄 이내 (넘으면 분리 검토)
+Before making changes, confirm the task still fits the active multi-factor-only scope.

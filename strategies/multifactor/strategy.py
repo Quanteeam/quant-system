@@ -20,16 +20,9 @@ from core.universe import (
     select_dynamic_universe,
 )
 from strategies.base import StrategyDataAccess, StrategyDefinition
-from strategies.multifactor.factors import (
-    compute_composite,
-    compute_gap_events,
-    compute_quality,
-    compute_sue,
-    compute_value,
-)
-from strategies.multifactor.portfolio import build_event_portfolio, build_multifactor_portfolio
+from strategies.multifactor.factors import compute_composite
+from strategies.multifactor.portfolio import build_multifactor_portfolio
 from data_layer.backend import get_pit_fundamentals
-from trading.risk import RiskEngine
 
 
 DEFINITION = StrategyDefinition(
@@ -71,9 +64,6 @@ def run_backtest(
     mom_lb,
     vol_lb,
     sec_neutral,
-    ev_on,
-    sue_th,
-    max_hold,
     fw=None,
     comm_pct=0.00005,
     slip_pct=0.0005,
@@ -212,37 +202,6 @@ def run_backtest(
         out["mf"] = _to_dict(engine.run(mf_filtered, eval_start=start_ts))
     else:
         out["mf"] = _to_dict(engine.run(mf_wh, eval_start=start_ts))
-
-    if ev_on:
-        signal_prices = prices.loc[:, [col for col in prices.columns if col[0] in investable_close.columns]]
-        sue = compute_sue(data.get_earnings(tuple(candidate_tickers)))
-        gaps = compute_gap_events(signal_prices)
-        sue = pd.concat([sue, gaps], ignore_index=True).drop_duplicates(
-            subset=["ticker", "date"], keep="first"
-        )
-        latest_fund = get_pit_fundamentals(qcache, investable_close.iloc[-1], end_ts)
-        q_scores = compute_quality(latest_fund) if not latest_fund.empty else None
-        v_scores = compute_value(latest_fund) if not latest_fund.empty else None
-        ev_w = build_event_portfolio(
-            sue,
-            signal_prices,
-            q_scores,
-            v_scores,
-            sue_threshold=sue_th,
-            max_holding_days=max_hold,
-        )
-        ev_w = ev_w.reindex(investable_close.index, method="ffill").fillna(0.0)
-        out["event"] = _to_dict(engine.run(ev_w, eval_start=start_ts))
-
-        cols = sorted(set(mf_wh.columns) | set(ev_w.columns))
-        combined = (
-            mf_wh.reindex(columns=cols, fill_value=0.0) * 0.4
-            + ev_w.reindex(index=mf_wh.index, columns=cols, fill_value=0.0) * 0.6
-        )
-        risk_eng = RiskEngine()
-        safe_w, risk_events = risk_eng.apply_risk_to_backtest(combined, prices)
-        out["hybrid"] = _to_dict(engine.run(safe_w, eval_start=start_ts))
-        out["risk_events"] = risk_events
 
     return out
 

@@ -8,7 +8,7 @@ from backtesting.costs import CostConfig
 from backtesting.trend_filter import TrendFilterConfig
 from core.config import DEFAULT_CONFIG
 from core.universe import BENCHMARK_TICKERS
-from data_layer.backend import load_earnings, load_prices, load_quarterly_cache, load_ticker_metadata
+from data_layer.backend import load_prices, load_quarterly_cache, load_ticker_metadata
 from strategies.base import StrategyDataAccess
 from strategies.registry import get_strategy, strategy_options
 
@@ -16,11 +16,6 @@ from strategies.registry import get_strategy, strategy_options
 @st.cache_data(show_spinner="Loading price data...")
 def get_prices(tickers: tuple[str, ...], start: str, end: str):
     return load_prices(list(tickers), start, end)
-
-
-@st.cache_data(show_spinner="Loading earnings data...")
-def get_earnings(tickers: tuple[str, ...]):
-    return load_earnings(list(tickers))
 
 
 @st.cache_data(show_spinner="Loading quarterly PIT cache...")
@@ -43,7 +38,6 @@ def ensure_benchmark_prices(prices: pd.DataFrame, start: str, end: str, required
 def _data_access() -> StrategyDataAccess:
     return StrategyDataAccess(
         get_prices=get_prices,
-        get_earnings=get_earnings,
         get_quarterly=get_quarterly,
         get_ticker_metadata=get_ticker_metadata,
         ensure_benchmark_prices=ensure_benchmark_prices,
@@ -59,9 +53,6 @@ def run_backtest(
     mom_lb,
     vol_lb,
     sec_neutral,
-    ev_on,
-    sue_th,
-    max_hold,
     fw=None,
     comm_pct=0.00005,
     slip_pct=0.0005,
@@ -80,9 +71,6 @@ def run_backtest(
         mom_lb=mom_lb,
         vol_lb=vol_lb,
         sec_neutral=sec_neutral,
-        ev_on=ev_on,
-        sue_th=sue_th,
-        max_hold=max_hold,
         fw=fw,
         comm_pct=comm_pct,
         slip_pct=slip_pct,
@@ -181,7 +169,7 @@ def main():
 
         st.divider()
         st.header("Transaction Cost")
-        cost_preset = st.checkbox("Realistic Cost (IBKR)", True)
+        cost_preset = st.checkbox("Realistic Cost", True)
         if cost_preset:
             comm_pct = 0.00005
             slip_pct = 0.0005
@@ -191,11 +179,6 @@ def main():
             slip_pct = st.slider("Slippage (%)", 0.0, 0.05, 0.0005, 0.0001, format="%.4f%%", key="slip")
         cost_cfg = CostConfig(commission_pct=comm_pct, slippage_pct=slip_pct)
 
-        st.divider()
-        st.header("PEAD")
-        ev_on = st.checkbox("Enable Hybrid 60/40", False)
-        sue_th = st.slider("SUE Threshold", 0.3, 3.0, 1.0, 0.1) if ev_on else 1.0
-        max_hold = st.slider("Max Holding", 15, 90, 60) if ev_on else 60
         run = st.button("Run", type="primary", use_container_width=True)
 
     with tab_opt:
@@ -221,9 +204,6 @@ def main():
             mom_lb,
             vol_lb,
             sec_n,
-            ev_on,
-            sue_th,
-            max_hold,
             w_mom,
             w_qual,
             w_val,

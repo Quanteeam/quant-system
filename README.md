@@ -1,97 +1,118 @@
 # Quant System
 
-NASDAQ small/mid-cap 대상 systematic equity trading 시스템.
-Multi-factor + Event-driven (PEAD) 하이브리드 구조를 목표로 한다.
+Local Sharadar data based multi-factor backtesting system.
 
-## 설치
+The active scope is multi-factor only. PEAD event sleeves, hybrid allocation, yfinance fallback, and live broker execution are intentionally out of scope unless the team explicitly reopens them.
+
+## Install
 
 ### pip
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### Poetry
+
 ```bash
 poetry install
 ```
 
-## 실행
+## Run
 
 ### Streamlit UI
+
 ```bash
 streamlit run app.py
-# 또는
+# or
 python main.py ui
 ```
 
-### CLI 백테스트
+### CLI Backtest
+
 ```bash
 python main.py backtest
 ```
 
-### 테스트
+### Tests
+
 ```bash
 pytest
 ```
 
-### Config 확인
+### Check Config
+
 ```bash
 python -c "from config import DEFAULT_CONFIG; print(DEFAULT_CONFIG.data.backend)"
 ```
 
-## 데이터 Backend
+## Data Backend
 
-기본값은 `local`이다. 팀 공유 Sharadar 전처리 데이터나 Sharadar API를 쓸 때는 repo root에 `.env.local`을 만들고 개인 환경값만 넣는다. `.env.local`은 git에 올리지 않는다.
+The default backend is `local`. Create `.env.local` in the repo root for personal paths and keys. `.env.local` is gitignored.
 
-### 로컬 전처리 데이터
+### Local Preprocessed Data
+
 ```env
 QUANT_DATA_BACKEND=local
-NASDAQ_DATA_DIR=C:\path\to\nasdaq_data\processed
+NASDAQ_DATA_DIR=C:\Users\womin\quant_data
 ```
 
-`NASDAQ_DATA_DIR`에는 로컬 preprocess 폴더 경로를 넣는다.
+`NASDAQ_DATA_DIR` should point to the output folder created by `preprocess.py`.
 
 ### Sharadar API
+
 ```env
 QUANT_DATA_BACKEND=sharadar
 NASDAQ_DATA_LINK_API_KEY=your_api_key
 ```
 
-`QUANDL_API_KEY`도 대체 키 이름으로 지원한다.
+`QUANDL_API_KEY` is also supported as a legacy alias.
 
-## 디렉토리 구조
+Do not use `yfinance`. SPY and QQQ benchmark data must come from the local Sharadar bundle.
 
-| 경로 | 설명 |
+## Preprocess Raw Sharadar ZIPs
+
+```bash
+python preprocess.py --raw-dir "C:/Users/womin/OneDrive/바탕 화면/quant_data" --out-dir "C:/Users/womin/quant_data"
+```
+
+Expected outputs:
+
+- `tickers.parquet`
+- `sep/ticker=<TICKER>/data.parquet`
+- `sf1.parquet`
+
+## Directory Structure
+
+| Path | Purpose |
 |---|---|
-| `core/` | 공통 설정, universe 구성 |
-| `data_layer/` | local parquet, Polygon, Sharadar 데이터 backend |
-| `backtesting/` | 공통 백테스트 엔진, 거래비용, trend filter |
-| `strategies/` | 전략별 구현과 registry |
-| `strategies/multifactor/` | 4/5-factor multi-factor 전략 |
-| `trading/` | 실행 엔진, risk 엔진 |
-| `research/` | 분석, 최적화, robustness, walk-forward |
-| `ui/` | Streamlit tab별 UI |
-| `tests/` | pytest 단위 테스트 |
+| `core/` | Shared config and universe construction |
+| `data_layer/` | Local parquet and Sharadar data backends |
+| `backtesting/` | Common backtest engine, transaction costs, trend filter |
+| `strategies/` | Strategy registry and implementations |
+| `strategies/multifactor/` | Active multi-factor strategy |
+| `trading/` | Legacy/inactive execution-related modules |
+| `research/` | Optimization, robustness, and walk-forward helpers |
+| `ui/` | Streamlit tab renderers |
+| `tests/` | pytest tests |
 
-기존 루트 파일(`data.py`, `backtest.py`, `factors.py`, `portfolio.py` 등)은 호환용 wrapper로 유지한다. 새 코드는 가능하면 패키지 경로를 직접 import한다.
+Root files such as `data.py`, `backtest.py`, `factors.py`, and `portfolio.py` remain as compatibility wrappers. New code should prefer package imports.
 
-## 전략 추가 규칙
+## Strategy Rules
 
-새 전략은 `strategies/{strategy_name}/` 폴더로 만든다.
+New strategies belong under `strategies/{strategy_name}/` and must be registered in `strategies/registry.py` before they appear in the UI or backtest flows.
 
-1. 전략별 로직은 해당 전략 폴더 안에서만 수정한다.
-2. 공통 백테스트 로직은 `backtesting/`에서 수정한다.
-3. UI나 백테스트에서 선택하려면 `strategies/registry.py`에 등록한다.
-4. 새 패키지를 쓰면 `requirements.txt`에 추가한다.
-5. 로컬 경로나 개인 PC 의존성은 `requirements.txt`에 넣지 않는다.
+Shared backtest mechanics belong in `backtesting/`. Strategy-specific logic should stay inside its strategy folder.
 
-## 현재 상태
+When adding a package, update `requirements.txt`. Do not add local paths or personal PC dependencies to tracked files.
 
-- 폴더 구조 정리 완료: `core`, `data_layer`, `backtesting`, `strategies`, `trading`, `research`, `ui`
-- 기존 루트 파일은 호환용 wrapper로 유지
-- multi-factor 전략은 `strategies/multifactor`로 분리
-- 전략 registry 추가
-- `requirements.txt` 추가
-- SPY/QQQ benchmark 비교 지원
-- local parquet backend 및 Sharadar backend 지원
-- 파이프라인 테스트 통과: `pytest`
+## Current State
+
+- Folder structure is organized into `core`, `data_layer`, `backtesting`, `strategies`, `trading`, `research`, and `ui`.
+- Legacy root modules are compatibility wrappers.
+- Active strategy is `strategies/multifactor`.
+- Strategy registry is available for controlled strategy selection.
+- `requirements.txt` is tracked.
+- Local Sharadar backend is the default.
+- SPY and QQQ benchmarks are expected in the local data bundle.
+- Test suite passes with `pytest`.

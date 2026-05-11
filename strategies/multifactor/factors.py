@@ -1,4 +1,8 @@
-"""?⑺꽣 怨꾩궛: 5?⑺꽣 + SUE + gap events. Sector neutral z-score 吏??"""
+"""Multi-factor calculations.
+
+SUE and gap-event helpers are legacy utilities and are not part of the active
+multi-factor-only workflow.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -150,7 +154,7 @@ def compute_composite(
 def compute_gap_events(
     prices: pd.DataFrame, gap_threshold: float = 0.05, volume_multiple: float = 1.5,
 ) -> pd.DataFrame:
-    """Price gap-up ?대깽??(PEAD 蹂댁셿). ?섏씡瑜?5% + 嫄곕옒??1.5x ?됯퇏 ??SUE proxy."""
+    """Legacy event helper; not used by the active multi-factor runner."""
     close = _get_close(prices)
     try:
         vol = prices.xs("volume", level="field", axis=1)

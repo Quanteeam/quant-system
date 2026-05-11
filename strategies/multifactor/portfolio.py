@@ -1,8 +1,7 @@
-"""?ы듃?대━??援ъ꽦 紐⑤뱢.
+"""Portfolio construction for the active multi-factor workflow.
 
-build_multifactor_portfolio: top-N equal weight (multi-factor sleeve)
-build_event_portfolio: PEAD event-driven (event sleeve)
-combine_sleeves: ??sleeve ?듯빀
+Event portfolio and sleeve-combination helpers are legacy utilities and are not
+called by the current strategy runner.
 """
 from __future__ import annotations
 
@@ -41,7 +40,10 @@ def build_event_portfolio(
     max_holding_days: int = 45,
     stop_loss: float = -0.10,
 ) -> pd.DataFrame:
-    """PEAD event-driven portfolio weights.
+    """Legacy event-driven portfolio weights.
+
+    This helper is retained for historical tests only. The active strategy
+    runner does not call it.
 
     Entry: ?ㅼ쟻 諛쒗몴 D+1 (D+0 noise ?뚰뵾).
     Exit (癒쇱? ?꾨떖): D+max_holding_days / ?ㅼ쓬 ?ㅼ쟻 D-3 / stop loss.

@@ -3,7 +3,6 @@
 Usage:
     python main.py backtest
     python main.py ui
-    python main.py kill
 """
 from __future__ import annotations
 
@@ -51,18 +50,7 @@ def cmd_ui() -> None:
     )
 
 
-def cmd_kill() -> None:
-    from pathlib import Path
-
-    kill_file = Path("KILL_SWITCH")
-    kill_file.touch()
-    print("KILL SWITCH ACTIVATED")
-    print("  - KILL_SWITCH file created")
-    print("  - All live processes should halt when broker integration is enabled")
-    print("  - To resume: remove the KILL_SWITCH file")
-
-
-COMMANDS = {"backtest": cmd_backtest, "ui": cmd_ui, "kill": cmd_kill}
+COMMANDS = {"backtest": cmd_backtest, "ui": cmd_ui}
 
 
 def main() -> None:
