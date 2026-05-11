@@ -119,8 +119,8 @@ class BacktestConfig:
 
 @dataclass
 class DataConfig:
-    backend: Literal["yfinance", "local", "sharadar"] = field(
-        default_factory=lambda: os.getenv("QUANT_DATA_BACKEND", "yfinance")
+    backend: Literal["local", "sharadar"] = field(
+        default_factory=lambda: os.getenv("QUANT_DATA_BACKEND", "local")
     )
     local_data_dir: str = field(
         default_factory=lambda: os.getenv(

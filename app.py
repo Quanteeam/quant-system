@@ -33,29 +33,11 @@ def get_ticker_metadata():
     return load_ticker_metadata()
 
 
-@st.cache_data(show_spinner=False)
-def get_benchmark_fallback_prices(tickers: tuple[str, ...], start: str, end: str):
-    try:
-        from data_layer.yfinance_provider import load_prices as load_yf_prices
-    except Exception:
-        return pd.DataFrame()
-    try:
-        return load_yf_prices(list(tickers), start, end)
-    except Exception:
-        return pd.DataFrame()
-
-
 def ensure_benchmark_prices(prices: pd.DataFrame, start: str, end: str, required: list[str]):
+    del start, end
     existing = set(prices.columns.get_level_values("ticker"))
     missing = tuple(ticker for ticker in required if ticker not in existing)
-    if not missing:
-        return prices, []
-    fallback = get_benchmark_fallback_prices(missing, start, end)
-    if fallback.empty:
-        return prices, list(missing)
-    merged = pd.concat([prices, fallback], axis=1).sort_index(axis=1)
-    still_missing = [ticker for ticker in missing if ticker not in set(merged.columns.get_level_values("ticker"))]
-    return merged, still_missing
+    return prices, list(missing)
 
 
 def _data_access() -> StrategyDataAccess:

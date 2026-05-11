@@ -27,13 +27,24 @@ def _backend_module(value: str | None) -> str:
     return result.stdout.strip()
 
 
-def test_default_backend_is_yfinance():
-    assert _backend_module(None) == "data_layer.yfinance_provider"
-
-
 def test_local_backend_selection():
     assert _backend_module("local") == "data_layer.local"
 
 
 def test_sharadar_backend_selection():
     assert _backend_module("sharadar") == "data_layer.sharadar"
+
+
+def test_yfinance_backend_is_not_supported():
+    env = os.environ.copy()
+    env["QUANT_DATA_BACKEND"] = "yfinance"
+
+    result = subprocess.run(
+        [sys.executable, "-c", "from data_layer import backend"],
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Unsupported data backend" in result.stderr

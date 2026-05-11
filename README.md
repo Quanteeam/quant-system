@@ -41,7 +41,7 @@ python -c "from config import DEFAULT_CONFIG; print(DEFAULT_CONFIG.data.backend)
 
 ## 데이터 Backend
 
-기본값은 `yfinance`다. 팀 공유 로컬 데이터나 Sharadar API를 쓸 때는 repo root에 `.env.local`을 만들고 개인 환경값만 넣는다. `.env.local`은 git에 올리지 않는다.
+기본값은 `local`이다. 팀 공유 Sharadar 전처리 데이터나 Sharadar API를 쓸 때는 repo root에 `.env.local`을 만들고 개인 환경값만 넣는다. `.env.local`은 git에 올리지 않는다.
 
 ### 로컬 전처리 데이터
 ```env
@@ -64,7 +64,7 @@ NASDAQ_DATA_LINK_API_KEY=your_api_key
 | 경로 | 설명 |
 |---|---|
 | `core/` | 공통 설정, universe 구성 |
-| `data_layer/` | yfinance, local parquet, Polygon, Sharadar 데이터 backend |
+| `data_layer/` | local parquet, Polygon, Sharadar 데이터 backend |
 | `backtesting/` | 공통 백테스트 엔진, 거래비용, trend filter |
 | `strategies/` | 전략별 구현과 registry |
 | `strategies/multifactor/` | 4/5-factor multi-factor 전략 |

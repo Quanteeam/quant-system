@@ -20,7 +20,7 @@ git add .
 git commit -m "Initial: project spec and config"
 ```
 
-`phase1_prompt.md`는 별도 위치 OK (복붙용 텍스트).
+현재 코드는 Phase 1 프롬프트 기반 skeleton 단계를 지났으므로 `README.md`와 `CLAUDE.md`를 기준으로 진행한다.
 
 ---
 
@@ -36,7 +36,7 @@ git commit -m "Initial: project spec and config"
 
 ### Sonnet 사용 (검증 쉬움 / 표준)
 - UI (Streamlit, plotly)
-- 데이터 로딩 (yfinance, 캐싱)
+- 데이터 로딩 (local Sharadar parquet, 캐싱)
 - CLI, README, pyproject.toml
 - 단위 테스트 작성
 - Stub 함수
@@ -74,7 +74,7 @@ claude --model claude-opus-4-7     # critical 작업
 ```bash
 cd quant-system
 claude --model claude-sonnet-4-6
-# 채팅창에 phase1_prompt.md 내용 전체 복붙
+# README.md와 CLAUDE.md 기준으로 현재 작업 범위만 요청
 ```
 
 작업 끝나면 검증:
@@ -139,7 +139,7 @@ Phase: N
 4. **Git commit 자주** — 롤백 가능, 실수 비용 ↓
 5. **Opus에 큰 작업 금지** — 한 모듈씩, 컨텍스트 폭발 방지
 6. **테스트는 Sonnet이 작성, Opus가 review** — 작성 비용 ↓
-7. **mock 데이터로 Phase 1~5** — yfinance까지만 무료, Phase 6 이후 비용
+7. **mock/로컬 Sharadar 데이터로 검증** — 개인 경로와 API key는 `.env.local`에만 보관
 
 ### Phase별 Anthropic 토큰 예상 비용
 
@@ -203,7 +203,7 @@ Phase: N
 ```bash
 cd quant-system
 claude --model claude-sonnet-4-6
-# phase1_prompt.md 복붙
+# README.md와 CLAUDE.md 기준으로 현재 작업 범위만 요청
 ```
 
 Phase 1 끝나면 결과 보고 → Phase 2 prompt 작성해주겠다.

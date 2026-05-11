@@ -1,7 +1,6 @@
 numpy>=1.26,<3
 pandas>=2.2,<3
 pyarrow>=14,<18
-yfinance>=0.2.40,<2
 streamlit>=1.30,<2
 plotly>=5.18,<7
 optuna>=4.0,<5

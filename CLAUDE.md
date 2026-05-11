@@ -25,7 +25,7 @@ quant-system/
 ├── README.md           # Phase 1에 생성
 ├── pyproject.toml
 ├── config.py           # 모든 파라미터 (dataclass)
-├── data.py             # 데이터 로딩 (yfinance → Polygon migration)
+├── data.py             # 데이터 backend 호환 wrapper
 ├── factors.py          # 5팩터 + SUE 계산
 ├── portfolio.py        # 60/40 sleeve construction
 ├── backtest.py         # 백테스트 엔진 + metrics
@@ -66,7 +66,7 @@ quant-system/
 ### Sonnet 사용 영역 (검증 쉬움 / 표준 패턴)
 
 - `app.py` Streamlit UI 전체
-- `data.py` 의 yfinance 로딩 + 캐싱 + retry
+- `data_layer/` backend 연결, 로컬 데이터 로딩, 캐싱/에러 처리
 - `main.py` CLI 진입점
 - `tests/` 단위 테스트 작성 (테스트 케이스 설계는 Opus)
 - `pyproject.toml`, `README.md` 보일러플레이트
@@ -96,20 +96,21 @@ quant-system/
 
 ## 의존성
 
-핵심: `pandas`, `numpy`, `pyarrow`, `yfinance`, `streamlit`, `plotly`
-미래: `polygon-api-client` (Phase 6+), `ib_async` (Phase 7+, `ib_insync`는 폐기)
+핵심: `pandas`, `numpy`, `pyarrow`, `streamlit`, `plotly`
+데이터: 로컬 Sharadar parquet bundle 또는 Nasdaq Data Link Sharadar API
+미래: `ib_async` (Phase 7+, `ib_insync`는 폐기)
 
 ---
 
-## 데이터 소스 (단계적)
+## 데이터 소스
 
-| Phase | 소스 | 비용 | 한계 |
-|---|---|---|---|
-| 1~5 | yfinance | 무료 | survivorship bias, look-ahead 위험 |
-| 6+ | Polygon Stocks Starter + Sharadar PIT | $170~220/월 | 본격 검증 |
-| 7+ | + Estimize/Zacks (consensus EPS) | +$50~100/월 | PEAD 필수 |
+| 용도 | 소스 | 설정 |
+|---|---|---|
+| 기본 개발/백테스트 | 로컬 Sharadar parquet bundle | `QUANT_DATA_BACKEND=local`, `NASDAQ_DATA_DIR=...` |
+| API 직접 조회 | Nasdaq Data Link Sharadar | `QUANT_DATA_BACKEND=sharadar`, `NASDAQ_DATA_LINK_API_KEY=...` |
+| PEAD consensus 확장 | Estimize/Zacks 등 | 별도 backend 추가 |
 
-**Phase 1~3은 yfinance로 시스템 동작만 확인.** 실제 알파 검증은 Phase 6 이후.
+`yfinance`는 사용하지 않는다. SPY/QQQ benchmark도 로컬 데이터 bundle에 포함되어 있어야 한다.
 
 ---
 
@@ -248,7 +249,7 @@ max DD < PEAD only.
 | Phase | 내용 | 검증 |
 |---|---|---|
 | 1 | 셋업 + UI skeleton + mock 백테스트 | `streamlit run app.py` 동작 |
-| 2 | 5팩터 계산 (yfinance) | factor z-score 분포 정상 |
+| 2 | 5팩터 계산 (Sharadar PIT/local) | factor z-score 분포 정상 |
 | 3 | Multi-factor sleeve 백테스트 | Sharpe > SPY |
 | 4 | PEAD signal + event sleeve | 단위 테스트 통과 |
 | 5 | 60/40 통합 + Risk Engine | 4 baseline 비교 |

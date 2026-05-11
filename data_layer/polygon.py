@@ -1,6 +1,6 @@
 """Polygon.io ?곗씠??濡쒕뵫 (Phase 6).
 
-yfinance ?鍮??μ젏:
+Legacy free-data providers 대비 장점:
 - Point-in-time (PIT) fundamental ??look-ahead bias ?쒓굅
 - Survivorship-bias-free universe
 - ??湲?earnings ?대젰
